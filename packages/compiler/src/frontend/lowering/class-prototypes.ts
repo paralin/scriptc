@@ -87,16 +87,7 @@ export function classPrototypeData(
       loc,
     };
   }
-  if (
-    info.mixinInstance ||
-    info.generic ||
-    info.genericInstance ||
-    info.def.runtime ||
-    info.builtinEmitter ||
-    info.builtinStream ||
-    info.builtinError
-  )
-    return null;
+  if (!classPrototypeHoldsData(info)) return null;
   if (info.def.prototypeDataHelper === undefined) {
     const base = info.callableBase
       ? varRef(info.callableBase.prototypeId, DYN, loc)
@@ -227,6 +218,31 @@ export function classPrototypeData(
     }
   }
   return { kind: "call", callee: info.def.prototypeDataHelper, args: [], type: DYN, loc };
+}
+
+/** Whether the prototype of info's instances can hold data, such as the
+ * method slots a prototype lookup finds. Generic, mixin, and runtime-provided
+ * classes keep none, nor do the compiled classes that extend them. */
+export function classPrototypeHoldsData(info: ClassInfo): boolean {
+  if (info.localClass) return true;
+  if (
+    info.mixinInstance ||
+    info.generic ||
+    info.genericInstance ||
+    info.def.runtime ||
+    info.builtinEmitter ||
+    info.builtinStream ||
+    info.builtinError
+  )
+    return false;
+  if (info.callableBase || !info.base || info.base.builtinError) return true;
+  return classPrototypeHoldsData(info.base);
+}
+
+/** Whether a lookup of `name` on info's instances reads a prototype slot
+ * that a program write can replace, instead of the native method. */
+export function prototypeHoldsMethod(lowerer: Lowerer, info: ClassInfo, name: string): boolean {
+  return lowerer.prototypeMethodAccesses.has(name) && classPrototypeHoldsData(info);
 }
 
 export function hasClassPrototypeData(info: ClassInfo): boolean {

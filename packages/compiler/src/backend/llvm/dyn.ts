@@ -732,6 +732,36 @@ export class LlDyn {
     return matched;
   }
 
+  /** Answers a typed-ref capsule by matching its ordinary data view with
+   * the matcher `name`, or rejects it when references must keep their
+   * identity. Other values continue in the block this leaves open. */
+  private matchCapsuleView(
+    B: BlockBuilder,
+    name: string,
+    wrapped: boolean,
+    preserveRefs: boolean,
+  ): void {
+    const kind = this.kindOf(B, "%d");
+    const capsule = B.tmp();
+    B.line(`${capsule} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
+    const lCapsule = B.newLabel("dm.tr.mat");
+    const lPlain = B.newLabel("dm.tr.plain");
+    B.condBr(capsule, lCapsule, lPlain);
+    B.startBlock(lCapsule);
+    if (preserveRefs) {
+      B.terminate(`ret i1 false`);
+    } else {
+      this.host.declare(`declare void @scr_dyn_release_v(ptr)`);
+      const materialized = B.tmp();
+      const matched = B.tmp();
+      B.line(`${materialized} = call ptr @${this.viewFn(wrapped)}(ptr %d)`);
+      B.line(`${matched} = call zeroext i1 @${name}(ptr ${materialized})`);
+      B.line(`call void @scr_dyn_release_v(ptr ${materialized})`);
+      B.terminate(`ret i1 ${matched}`);
+    }
+    B.startBlock(lPlain);
+  }
+
   /** `sc_dm_<n>(ptr d) -> i1` — does this dyn fit T? Never throws. */
   dynMatchHelper(t: IrType, preserveRefs = false): string {
     const key = typeKey(t);
@@ -752,28 +782,11 @@ export class LlDyn {
       B.terminate(`ret i1 true`);
       B.startBlock(lNext);
     }
-    if (t.kind !== "dyn") {
-      const view = this.viewFn(wrapped);
-      this.host.declare(`declare void @scr_dyn_release_v(ptr)`);
-      const kind = this.kindOf(B, "%d");
-      const capsule = B.tmp();
-      B.line(`${capsule} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
-      const lCapsule = B.newLabel("dm.tr.mat");
-      const lPlain = B.newLabel("dm.tr.plain");
-      B.condBr(capsule, lCapsule, lPlain);
-      B.startBlock(lCapsule);
-      if (preserveRefs) {
-        B.terminate(`ret i1 false`);
-      } else {
-        const materialized = B.tmp();
-        const matched = B.tmp();
-        B.line(`${materialized} = call ptr @${view}(ptr %d)`);
-        B.line(`${matched} = call zeroext i1 @${name}(ptr ${materialized})`);
-        B.line(`call void @scr_dyn_release_v(ptr ${materialized})`);
-        B.terminate(`ret i1 ${matched}`);
-      }
-      B.startBlock(lPlain);
-    }
+    // A union asks its arms first, since each arm's matcher accepts the
+    // capsule tags of its own type; materializing the capsule here would
+    // hide an `object:C` capsule from a class arm.
+    if (t.kind !== "dyn" && t.kind !== "union")
+      this.matchCapsuleView(B, name, wrapped, preserveRefs);
     const kindIs = (k: number): void => {
       const kd = this.kindOf(B, "%d");
       const r = B.tmp();
@@ -1062,6 +1075,8 @@ export class LlDyn {
           this.unionArmMatch(B, def, tag, yes, ln, preserveRefs);
           B.startBlock(ln);
         }
+        // No arm took the capsule as it is: try its ordinary data view.
+        this.matchCapsuleView(B, name, wrapped, preserveRefs);
         B.terminate(`ret i1 false`);
         B.startBlock(yes);
         B.terminate(`ret i1 true`);
