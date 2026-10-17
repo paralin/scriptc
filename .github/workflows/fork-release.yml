@@ -1,0 +1,204 @@
+name: Fork release
+
+# Builds a release of this fork from a version tag such as v0.3.6-paralin.1
+# and attaches the standalone compilers and the WASI runtime pack to its
+# GitHub release. Nothing is published to npm. The build steps follow the
+# build-native-packages job in release.yml; keep them in step when merging
+# upstream.
+on:
+  push:
+    tags:
+      - "v*-paralin.*"
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  build:
+    name: Build native package (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runner: macos-15
+            helper: llvm-darwin-arm64
+            runtime: runtime-darwin-arm64
+            cli: cli-darwin-arm64
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            helper: llvm-linux-x64-gnu
+            runtime: runtime-linux-x64-gnu
+            cli: cli-linux-x64-gnu
+            llvm_asset: LLVM-22.1.8-Linux-X64
+            use_zig: true
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            helper: llvm-linux-arm64-gnu
+            runtime: runtime-linux-arm64-gnu
+            cli: cli-linux-arm64-gnu
+            llvm_asset: LLVM-22.1.8-Linux-ARM64
+            use_zig: true
+          - platform: windows-x64
+            runner: windows-2022
+            helper: llvm-win32-x64-msvc
+            runtime: runtime-win32-x64-msvc
+            cli: cli-win32-x64-msvc
+            use_zig: true
+          - platform: wasm32-wasi
+            runner: ubuntu-24.04
+            helper: llvm-linux-x64-gnu
+            runtime: runtime-wasm32-wasi
+            llvm_asset: LLVM-22.1.8-Linux-X64
+            use_zig: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+      - name: Stamp the tag's version
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const path = "packages/cli/package.json";
+            const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+            manifest.version = process.argv[1];
+            fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
+          ' "${GITHUB_REF_NAME#v}"
+          node scripts/sync-versions.mjs
+      - name: Install toolchain (macOS)
+        if: startsWith(matrix.platform, 'darwin')
+        run: |
+          brew install llvm@22
+          llvm_prefix=$(brew --prefix llvm@22)
+          echo "$llvm_prefix/bin" >> "$GITHUB_PATH"
+          echo "LLVM_DIR=$llvm_prefix/lib/cmake/llvm" >> "$GITHUB_ENV"
+      - name: Install pinned LLVM development distribution (Linux)
+        if: startsWith(matrix.platform, 'linux') || matrix.platform == 'wasm32-wasi'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes g++ zlib1g-dev libzstd-dev
+          curl -fL --retry 3 -o "$RUNNER_TEMP/llvm.tar.xz" "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/${{ matrix.llvm_asset }}.tar.xz"
+          tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP/${{ matrix.llvm_asset }}" "$RUNNER_TEMP/llvm-22.1.8"
+          echo "LLVM_DIR=$RUNNER_TEMP/llvm-22.1.8/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/llvm-22.1.8/bin" >> "$GITHUB_PATH"
+      - uses: vercel-labs/setup-zig@v1
+        if: matrix.use_zig == true
+        with:
+          version: 0.16.0
+      - name: Install pinned LLVM development distribution (Windows)
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: |
+          $archive = "$env:RUNNER_TEMP\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar.xz"
+          $llvm = "$env:RUNNER_TEMP\llvm-22.1.8"
+          $expanded = "$env:RUNNER_TEMP\llvm-expanded"
+          $sevenZip = "$env:ProgramFiles\7-Zip\7z.exe"
+          if (-not (Test-Path $sevenZip)) {
+            choco install 7zip --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (-not (Test-Path $sevenZip)) { throw "7-Zip is unavailable" }
+          curl.exe -fL --retry 3 -o $archive https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
+          & $sevenZip x -y "-o$expanded" $archive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $sevenZip x -y "-o$expanded" "$expanded\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item "$expanded\clang+llvm-22.1.8-x86_64-pc-windows-msvc" $llvm
+          echo "LLVM_DIR=$llvm\lib\cmake\llvm" >> $env:GITHUB_ENV
+          echo "$llvm\bin" >> $env:GITHUB_PATH
+      - run: pnpm install --frozen-lockfile
+      - name: Build native packages (POSIX)
+        if: matrix.platform != 'windows-x64'
+        run: |
+          pnpm --filter @scriptc/${{ matrix.helper }} build:native
+          if [ "${{ matrix.use_zig }}" = true ]; then
+            CC=zig AR=zig pnpm --filter @scriptc/${{ matrix.runtime }} build:native
+          else
+            CC=clang AR=llvm-ar pnpm --filter @scriptc/${{ matrix.runtime }} build:native
+          fi
+      - name: Build native packages (Windows)
+        if: matrix.platform == 'windows-x64'
+        run: |
+          pnpm --filter @scriptc/${{ matrix.helper }} build:native
+          pnpm --filter @scriptc/${{ matrix.runtime }} build:native
+      - name: Build native CLI distribution
+        if: matrix.cli != ''
+        run: |
+          pnpm --filter @scriptc/compiler --filter scriptc build
+          pnpm --filter @scriptc/${{ matrix.cli }} build:native
+          node scripts/verify-native-cli.mjs packages/${{ matrix.cli }} --run
+      - name: Upload native packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          path: |
+            packages/${{ matrix.helper }}
+            packages/${{ matrix.runtime }}
+            ${{ matrix.cli != '' && format('packages/{0}/dist', matrix.cli) || '' }}
+          retention-days: 7
+
+  release:
+    name: Create GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Stamp the tag's version
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const path = "packages/cli/package.json";
+            const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+            manifest.version = process.argv[1];
+            fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
+          ' "${GITHUB_REF_NAME#v}"
+          node scripts/sync-versions.mjs
+      - run: pnpm install --frozen-lockfile
+      - name: Download native packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native
+          merge-multiple: true
+      - name: Package the compilers and the WASI runtime pack
+        run: |
+          # The artifacts hold each CLI's dist alone; give the packaging
+          # script the manifests it checks the version against.
+          mkdir -p native/compiler
+          cp packages/compiler/package.json native/compiler/
+          for cli in native/cli-*; do
+            cp "packages/$(basename "$cli")/package.json" "$cli/"
+          done
+          node scripts/package-native-cli.mjs native "$RUNNER_TEMP/assets"
+
+          # upload-artifact drops modes; the runtime pack holds no executables.
+          cp -R native/runtime-wasm32-wasi/. packages/runtime-wasm32-wasi/
+          pnpm --dir packages/runtime-wasm32-wasi pack --pack-destination "$RUNNER_TEMP/assets"
+          cd "$RUNNER_TEMP/assets"
+          sha256sum scriptc-runtime-wasm32-wasi-*.tgz >> SHA256SUMS
+          cat SHA256SUMS
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/assets/* \
+            --title "$GITHUB_REF_NAME" \
+            --prerelease \
+            --notes "Fork build of $GITHUB_REF_NAME. See FORK.md for the patches it carries."
