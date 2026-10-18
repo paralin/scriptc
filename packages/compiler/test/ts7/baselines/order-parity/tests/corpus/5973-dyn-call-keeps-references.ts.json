@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5973-dyn-call-keeps-references.ts"
+ ],
+ "diags": []
+}
