@@ -357,23 +357,12 @@ export class LlDyn {
       // records/arrays inside unions, rather than a detached dyn snapshot.
       const B = new BlockBuilder();
       B.line(`%value = ${unpack}`);
-      if (
-        type.kind === "union" &&
-        this.host.unionsById.get(type.unionId)?.arms.some(streamTypedRefEligible)
-      ) {
-        B.line(`%result = call ptr @${this.host.liveDynUnionRefAdapter(type)}(ptr %value)`);
-      } else if (type.kind === "record" || type.kind === "array") {
-        const adapter = this.host.liveDynRefAdapter(type);
-        const rc = vAdapters(this.host, type);
-        const typeId = typeKey(type);
-        B.line(
-          `%result = call ptr ${typedRefConstructor(this.host, type)}(ptr %value, ptr ${rc.retain}, ptr ${rc.release}, ptr ${this.host.cstr(typeId)}, ${this.S} ${Buffer.byteLength(typeId, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
-        );
-        for (const line of bindLiveArrayOps(this.host, adapter, "%result")) B.line(line);
-      } else {
-        B.line(`%result = call ptr @${this.toDynHelper(type)}(${ty} %value)`);
+      let result = this.liveRefToDyn(B, type, "%value");
+      if (result === null) {
+        result = B.tmp();
+        B.line(`${result} = call ptr @${this.toDynHelper(type)}(${ty} %value)`);
       }
-      B.terminate("ret ptr %result");
+      B.terminate(`ret ptr ${result}`);
       const unbox = this.dynCheckHelper(type);
       this.defs.push(
         `define internal ptr @${name}_${role}_box(i64 %slot) ${FN_ATTRS} {`,
@@ -4296,9 +4285,35 @@ export class LlDyn {
 
   /* ── the checked-dynamic function boundary (ported) ────────────────── */
 
+  /** Box a BORROWED record, array, or union holding one as a live typed
+   * reference (+1), so a checked read returns the original mutable value
+   * rather than a detached dyn snapshot. Returns null for any other type,
+   * which converts through toDyn instead. */
+  private liveRefToDyn(B: BlockBuilder, t: IrType, expr: string): string | null {
+    if (t.kind === "union") {
+      if (!this.host.unionsById.get(t.unionId)?.arms.some(streamTypedRefEligible)) return null;
+      const r = B.tmp();
+      B.line(`${r} = call ptr @${this.host.liveDynUnionRefAdapter(t)}(ptr ${expr})`);
+      return r;
+    }
+    if (t.kind !== "record" && t.kind !== "array") return null;
+    const adapter = this.host.liveDynRefAdapter(t);
+    const rc = vAdapters(this.host, t);
+    const typeId = typeKey(t);
+    const r = B.tmp();
+    B.line(
+      `${r} = call ptr ${typedRefConstructor(this.host, t)}(ptr ${expr}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${this.host.cstr(typeId)}, ${this.S} ${Buffer.byteLength(typeId, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
+    );
+    for (const line of bindLiveArrayOps(this.host, adapter, r)) B.line(line);
+    return r;
+  }
+
   /** The dyn argument spelling of one static value: dyn passes through
-   * (+1), funcs box anonymously, everything else rides toDyn. `expr` is
-   * BORROWED in every arm. Emits into the given builder. */
+   * (+1), funcs box anonymously, records and arrays box as live
+   * references, everything else rides toDyn. A value crossing the function
+   * boundary stays the same object, so a write through a dynamically called
+   * function's argument or result reaches the original. `expr` is BORROWED
+   * in every arm. Emits into the given builder. */
   private toDynExpr(B: BlockBuilder, t: IrType, expr: string): string {
     if (t.kind === "dyn") return this.retainDyn(B, expr);
     if (t.kind === "func") {
@@ -4307,6 +4322,8 @@ export class LlDyn {
       B.line(`${r} = call ptr @${box}(ptr ${expr}, ptr null)`);
       return r;
     }
+    const live = this.liveRefToDyn(B, t, expr);
+    if (live !== null) return live;
 
     const r = B.tmp();
     B.line(`${r} = call ptr @${this.toDynHelper(t)}(${this.valTy(t)} ${expr})`);
