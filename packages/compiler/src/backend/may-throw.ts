@@ -93,7 +93,14 @@ export function computeMayThrow(
   // Generator functions follow the async exclusion: CALLING one only
   // allocates the suspended fiber (nothing runs, nothing can throw) — a
   // body throw surfaces at genResume, which seeds unconditionally below.
-  const genFns = new Set(mod.functions.filter((fn) => fn.generator).map((fn) => fn.name));
+  // A bindAtCall generator (a parameter prologue that destructures or
+  // defaults) is the exception: its spawn wrapper runs that prologue inside
+  // the call, so the call can throw and takes an ordinary call edge.
+  const genFns = new Set(
+    mod.functions
+      .filter((fn) => fn.generator !== undefined && fn.generator.bindAtCall !== true)
+      .map((fn) => fn.name),
+  );
   const callbackFfiImports = new Set(
     (mod.ffiImports ?? [])
       .filter((entry) => entry.params.some(isFfiCallbackParam))

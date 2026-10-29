@@ -1370,7 +1370,16 @@ export function lowerGenericInstance(
     // threaded — a default mentioning T resolves like any body expression.
     const declared = lowerer.declareParams(decl.parameters.nodes, inst.params);
     params.push(...declared.params, ...captureParams);
-    const body = [...receiverInit, ...declared.prologue];
+    // See lowerFunction: a generator binds its parameters at the CALL, so
+    // a prologue that destructures or defaults runs before the spawn
+    // wrapper returns the generator object. The receiver materialization
+    // (`staticReceiver`) is call machinery, not parameter binding.
+    const bindsAtCall = isGenerator && declared.prologue.length > 0;
+    const body = [
+      ...receiverInit,
+      ...declared.prologue,
+      ...(bindsAtCall ? [{ kind: "genBindBarrier" as const, loc: locOf(decl) }] : []),
+    ];
     const bodyBlock = blockBodyOf(decl);
     if (bodyBlock) {
       body.push(...lowerer.lowerStmts(bodyBlock.statements.nodes));
@@ -1429,7 +1438,8 @@ export function lowerGenericInstance(
       loc: locOf(decl),
     };
     if (isAsync) fn.async = true;
-    if (fnCtx.generator) fn.generator = fnCtx.generator;
+    if (fnCtx.generator)
+      fn.generator = bindsAtCall ? { ...fnCtx.generator, bindAtCall: true } : fnCtx.generator;
     return fn;
   } finally {
     lowerer.fnStack.pop();

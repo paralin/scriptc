@@ -523,7 +523,16 @@ export function lowerLambda(
       fnCtx.returnType = bodyReturn;
     }
     dropUnreadReceiver(fnCtx, prologue, receiver);
-    body = [...prologue, ...body];
+    // Generator parameters bind at the CALL (FunctionDeclarationInstantiation
+    // runs before GeneratorStart): a prologue statement that destructures,
+    // defaults or builds the arguments object must not wait for the first
+    // resume. Only such statements earn the barrier — an identifier-only
+    // parameter list, with the receiver read it implies, runs nothing before
+    // the first `.next()`.
+    const bindsAtCall = isGenerator && prologue.some((stmt) => stmt !== receiver);
+    body = bindsAtCall
+      ? [...prologue, { kind: "genBindBarrier" as const, loc }, ...body]
+      : [...prologue, ...body];
     // Bare-expression bodies never pass through lowerStmts, so the
     // lib-boundary chokepoint runs here (idempotent for block bodies,
     // whose statements were already walked). A fence poisons the
@@ -549,7 +558,9 @@ export function lowerLambda(
       loc,
     };
     if (isAsync) lifted.async = true;
-    if (fnCtx.generator) lifted.generator = fnCtx.generator;
+    if (fnCtx.generator) {
+      lifted.generator = bindsAtCall ? { ...fnCtx.generator, bindAtCall: true } : fnCtx.generator;
+    }
     lowerer.liftedFns.push(lifted);
     noteObjectMethodName(lowerer, node, fnName);
     return { kind: "closure", fnName, captures: ctx.captureSources, type: funcType, loc };
@@ -650,7 +661,17 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
       ? lowerUndefinedResultBody(lowerer, decl, undefinedResult, lowerBody)
       : lowerBody();
     dropUnreadReceiver(ctx, prologue, receiver);
-    const body = [...prologue, ...statements];
+    // See lowerLambda: a generator binds its parameters at the CALL, so a
+    // prologue that destructures or defaults must run before the spawn
+    // wrapper returns the generator object. The receiver read and the
+    // arity bookkeeping are the call machinery, not parameter binding, and
+    // keep the unbarriered shape.
+    const bindsAtCall =
+      sig.generator !== undefined &&
+      prologue.some((stmt) => stmt !== receiver && !argumentCount.includes(stmt));
+    const body = bindsAtCall
+      ? [...prologue, { kind: "genBindBarrier" as const, loc: locOf(decl) }, ...statements]
+      : [...prologue, ...statements];
     appendImplicitUndefinedReturn(lowerer, body, bodyReturn, locOf(decl));
     const fn: IrFunction = {
       name: sig.name,
@@ -663,7 +684,8 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
       loc: locOf(decl),
     };
     if (sig.isAsync) fn.async = true;
-    if (sig.generator !== undefined) fn.generator = sig.generator;
+    if (sig.generator !== undefined)
+      fn.generator = bindsAtCall ? { ...sig.generator, bindAtCall: true } : sig.generator;
     return fn;
   } catch (e) {
     // A poison OUTSIDE the per-statement catches (a parameter DEFAULT

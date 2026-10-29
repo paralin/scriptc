@@ -2045,6 +2045,13 @@ export interface IrFunction {
     /** The first parameter is a generator this one adapts: it prints with
      * that generator's tag. */
     inheritsTag?: true;
+    /** The parameter prologue ends in a `genBindBarrier`: the body binds its
+     * parameters at the CALL (FunctionDeclarationInstantiation runs before
+     * GeneratorStart), so the spawn wrapper enters the suspended body once,
+     * runs to the barrier, and returns the generator with the bindings
+     * already made. Absent when the parameters bind nothing (identifiers
+     * only), in which case nothing runs before the first resume. */
+    bindAtCall?: true;
   };
   /** Async module initializers only: a module-global Promise<T> slot where
    * the spawn wrapper caches its first evaluation promise. Every later
@@ -2225,6 +2232,15 @@ export type IrStmt =
    * it has no operand (`return;`). The request settles as the body
    * completes instead of one microtask turn later. */
   | { kind: "return"; value: IrExpr | null; awaited?: true; loc: SrcLoc }
+  /** The end of a generator's parameter prologue (fn.generator.bindAtCall).
+   * Parameters bind at the CALL — before GeneratorStart — so the spawn
+   * wrapper enters the suspended body once and runs to this statement. The
+   * barrier itself suspends invisibly: no OUT value is produced and no IN
+   * value is taken, and it carries the ordinary resumption check so
+   * `.return()`/`.throw()` before the first `.next()` still skip the body.
+   * Only a generator body may contain it, at most once, before its first
+   * yield. */
+  | { kind: "genBindBarrier"; loc: SrcLoc }
   /** Field write `obj.f = v` — statement-only, like `assign`/`arraySet`.
    * Evaluation order: obj, then value. The old value is released; ownership
    * of a refcounted new value MOVES into the object. `sloppy` marks a write

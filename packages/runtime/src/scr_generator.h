@@ -95,6 +95,15 @@ void scr_gen_resume(ScrGen *g);
 void scr_gen_resume_return(ScrGen *g);
 /* A valueless next() that answers done (the compiler's own drives). */
 bool scr_gen_step(ScrGen *g);
+/* The bind barrier's eager step (fn.generator.bindAtCall): a spawn wrapper
+ * runs a generator's parameter prologue inside the call, to the barrier at
+ * its end — an invisible suspension, which a fiber body writes as the
+ * valueless scr_gen_yield_ref. A synchronous generator reports a bind
+ * failure through the caller's exception cell; an async generator's
+ * rejection is moved there too, from async_error, so the call throws
+ * exactly as Node's does. scr_gen_bind lives in scr_gen_bind.c, a unit only
+ * programs with a bind barrier link. */
+void scr_gen_bind(ScrGen *g);
 /* IteratorClose: a valueless return() whose result is dropped. */
 void scr_gen_close(ScrGen *g);
 void scr_gen_resume_throw(ScrGen *g);

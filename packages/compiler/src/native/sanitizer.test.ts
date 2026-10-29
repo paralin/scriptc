@@ -21,6 +21,7 @@ const features = {
   declAdopt: false,
   typeOrigins: false,
   dynForAwait: false,
+  genBind: false,
   eventsOnceSignal: false,
   mime: false,
   largePages: false,

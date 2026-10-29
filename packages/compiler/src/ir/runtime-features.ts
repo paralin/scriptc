@@ -1017,6 +1017,12 @@ const RUNTIME_FEATURE_RULES = {
   typeOrigins: rule({ initial: (mod) => (mod.declOrigins?.length ?? 0) > 0 }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
+  /** A generator that binds its parameters at the call (scr_gen_bind.c):
+   * the spawn wrapper's eager step imports the bind helper, and every other
+   * program links the default runtime objects. */
+  genBind: rule({
+    initial: (mod) => mod.functions.some((fn) => fn.generator?.bindAtCall === true),
+  }),
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
@@ -1373,6 +1379,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fsFlags: false,
     fsWatch: false,
     fsWatchFile: false,
+    genBind: false,
     http2: false,
     http: false,
     icu: false,

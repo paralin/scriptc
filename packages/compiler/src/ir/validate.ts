@@ -6976,6 +6976,12 @@ function validateFunction(
         // The deferred JS compile fence: carries only its message/code.
         if (s.message.length === 0) err(`runtimeFence with an empty message`, s.loc);
         break;
+      case "genBindBarrier":
+        // The generator bind barrier: a marker in a bindAtCall body only.
+        if (fn.generator?.bindAtCall !== true) {
+          err(`genBindBarrier in a body without generator.bindAtCall`, s.loc);
+        }
+        break;
       case "rethrow": {
         // `throw e` of a catch binding: re-raises the saved snapshot.
         const local = locals.get(s.localId) ?? globals.get(s.localId);

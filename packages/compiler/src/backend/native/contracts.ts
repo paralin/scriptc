@@ -138,6 +138,9 @@ export interface CcOptions {
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
+  /** A generator that binds its parameters at the call: compiles
+   * scr_gen_bind.c. */
+  genBind?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;

@@ -57,6 +57,28 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(storage)).toMatchObject({ bigint: true, bigstats: false });
   });
 
+  test("gates the call-time parameter bind unit on a barriered generator", () => {
+    const mod = module();
+    const generator = (bindAtCall: boolean): IrModule["functions"][number] => ({
+      name: bindAtCall ? "pick" : "plain",
+      params: [],
+      locals: [],
+      returnType: VOID,
+      body: [],
+      loc,
+      generator: {
+        yieldT: STRING,
+        nextT: VOID,
+        resultType: { kind: "record", shapeId: "gen-result" },
+        ...(bindAtCall ? { bindAtCall: true as const } : {}),
+      },
+    });
+    mod.functions.push(generator(false));
+    expect(moduleRuntimeFeatures(mod).genBind).toBe(false);
+    mod.functions.push(generator(true));
+    expect(moduleRuntimeFeatures(mod).genBind).toBe(true);
+  });
+
   test("keeps legacy HTTP/2 calls and isolated CA inspection out of the HTTP/2 unit", () => {
     const mod = module();
     mod.functions[0]!.body.push(call("http2.streamNoop"));
