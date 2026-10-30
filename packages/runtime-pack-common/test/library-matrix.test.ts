@@ -48,6 +48,7 @@ test("library pack modes preserve pure runtime features and exclude ambient even
         "scr_console_native.c",
         "scr_copying.c",
         "scr_js_buffers.c",
+        "scr_decl_adopt.c",
       ])
         expect(sources).toContain(source);
       // A library whose program moves a buffer names scr_js_buffers_arm, so
