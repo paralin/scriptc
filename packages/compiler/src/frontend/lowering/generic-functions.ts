@@ -1459,6 +1459,31 @@ function noteValueInstance(info: GenericFnInfo, instance: string): void {
   instances.add(instance);
 }
 
+/** Records the instance a pinned binding holds (`const f: Fn = ident`,
+ * `const i = identity<number>`) under its declaration, so an identity
+ * comparison between two bindings compares the closures they name
+ * (checkGenericIdentityPins). */
+function notePinnedBinding(
+  lowerer: Lowerer,
+  ref: ts.Expression,
+  info: GenericFnInfo,
+  instance: string,
+): void {
+  let node: ts.Node = ref;
+  if (
+    node.parent !== undefined &&
+    ts.isPropertyAccessExpression(node.parent) &&
+    node.parent.name === node
+  )
+    node = node.parent;
+  while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  if (parent === undefined || !ts.isVariableDeclaration(parent) || parent.initializer !== node)
+    return;
+  if (!ts.isIdentifier(parent.name)) return;
+  lowerer.pinnedValueInstances.set(parent, { info, instance });
+}
+
 /** A generic function taken as a VALUE, monomorphized by flow. A function
  * value needs ONE concrete signature; tsc pins one at exactly two
  * reference shapes — an instantiation EXPRESSION (`identity<number>`,
@@ -1484,6 +1509,7 @@ export function lowerGenericFnValue(
   if (info.implicitParams) {
     const inst = implicitDefaultInstance(lowerer, ref, info);
     noteValueInstance(info, inst.name);
+    notePinnedBinding(lowerer, ref, info, inst.name);
     const funcType: IrType = funcTypeFromParamShapes(inst.params, inst.returnType);
     lowerer.requireExactArityValue(ref, ref, inst.params, funcType);
     lowerer.noteEdge(inst.name);
@@ -1688,6 +1714,7 @@ function pinnedGenericClosure(
   if (info.typeParams.some((tp) => !bindings.get(tp))) fenceUnpinned();
   const inst = genericValueInstance(lowerer, ref, info, bindings);
   noteValueInstance(info, inst.name);
+  notePinnedBinding(lowerer, ref, info, inst.name);
   // The value's type is the completed ABI signature. Typed rest keeps its
   // packed-array slot; dynRest stays hidden behind the rest marker.
   const funcType: IrType = funcTypeFromParamShapes(inst.params, inst.returnType);
@@ -1789,6 +1816,89 @@ export function checkGenericIdentityPins(lowerer: Lowerer): void {
       if (info) report(info, node, true);
     }
   }
+  // A typed function-vs-function comparison (`g === h`) whose two operands
+  // are pins of ONE declaration at different signatures: the closures the
+  // operands name are different function objects, so the pointer compare
+  // answers false while JavaScript has one function — a silent divergence.
+  for (const {
+    node,
+    left,
+    right,
+    leftInstance,
+    rightInstance,
+  } of lowerer.pinnedIdentityComparisons) {
+    const leftPin = pinnedInstanceBehind(lowerer, left, leftInstance);
+    if (leftPin === null) continue;
+    const rightPin = pinnedInstanceBehind(lowerer, right, rightInstance);
+    if (rightPin === null || rightPin.info !== leftPin.info) continue;
+    if (rightPin.instance === leftPin.instance) continue;
+    let infos = seen.get(node);
+    if (infos === undefined) seen.set(node, (infos = new Set()));
+    if (infos.has(leftPin.info)) continue;
+    infos.add(leftPin.info);
+    lowerer.pushDiag(
+      unsupportedDiag(
+        "SC1090",
+        locOf(node),
+        `comparing two values of the generic function '${leftPin.info.baseName}' pinned at different signatures by identity (each pinned signature is a separate compiled function object; JavaScript has one) — hold '${leftPin.info.baseName}' at a single signature, or compare values pinned to the same signature`,
+      ),
+    );
+  }
+}
+
+/** The value instance an identity operand names: the closure name it
+ * lowered to when it is an inline pin (`identity<number>`), else the
+ * binding it reads, resolved through casts and aliasing bindings. Null for
+ * a value with no recorded pin (a call result, a parameter, a binding the
+ * program rewrites). */
+function pinnedInstanceBehind(
+  lowerer: Lowerer,
+  node: ts.Node,
+  directInstance: string | undefined,
+): { info: GenericFnInfo; instance: string } | null {
+  let current: ts.Node | undefined = node;
+  const seen = new Set<ts.Node>();
+  while (current !== undefined && !seen.has(current)) {
+    seen.add(current);
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isSatisfiesExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isExpressionWithTypeArguments(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    if (!ts.isIdentifier(current) && !ts.isPropertyAccessExpression(current)) return null;
+    const symbol = lowerer.checker.getSymbolAtLocation(
+      ts.isPropertyAccessExpression(current) ? current.name : current,
+    );
+    if (symbol === undefined) return null;
+    const info = lowerer.genericFnsBySymbol.get(symbol);
+    if (info !== undefined) {
+      // The bare declaration itself: a pin only where the comparison
+      // names it directly (the direct rule covers that shape).
+      return directInstance === undefined ? null : { info, instance: directInstance };
+    }
+    const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];
+    if (decl === undefined) return null;
+    const recorded = lowerer.pinnedValueInstances.get(decl);
+    if (recorded !== undefined) {
+      // A binding the program later rewrites may hold another function at
+      // the comparison: resolve it only where it is never written.
+      if (ts.isVariableDeclaration(decl)) {
+        if (!ts.isIdentifier(decl.name)) return null;
+        const binding = lowerer.checker.getSymbolAtLocation(decl.name);
+        if (binding === undefined || !bindingNeverReassigned(lowerer, binding, decl)) return null;
+      }
+      return recorded;
+    }
+    if (!ts.isVariableDeclaration(decl) && !ts.isPropertyDeclaration(decl) && !ts.isParameter(decl))
+      return null;
+    current = decl.initializer;
+  }
+  return null;
 }
 
 /** The generic declaration whose value instance an expression names, when
@@ -1810,6 +1920,12 @@ export function genericDeclarationBehindValue(
       ts.isSatisfiesExpression(current) ||
       ts.isNonNullExpression(current)
     ) {
+      current = current.expression;
+      continue;
+    }
+    // An instantiation expression (`identity<number>`) names the
+    // declaration its type arguments apply to.
+    if (ts.isExpressionWithTypeArguments(current)) {
       current = current.expression;
       continue;
     }
@@ -1847,6 +1963,24 @@ export function noteDynamicIdentityComparison(
     lowerer.dynIdentityComparisons.push({ node, left, right });
 }
 
+/** An identity comparison of two function-typed values (`g === h`), where
+ * either side may name a value instance of a generic declaration: two pins
+ * of one declaration at different signatures are separate compiled
+ * closures, so the pointer compare would answer false where JavaScript
+ * answers true (one function object). Resolved by
+ * checkGenericIdentityPins, where every instance is known. */
+export function notePinnedIdentityComparison(
+  lowerer: Lowerer,
+  node: ts.Node,
+  left: ts.Node,
+  right: ts.Node,
+  leftInstance: string | undefined,
+  rightInstance: string | undefined,
+): void {
+  if (mightNameBinding(left) || mightNameBinding(right))
+    lowerer.pinnedIdentityComparisons.push({ node, left, right, leftInstance, rightInstance });
+}
+
 /** Whether an expression could name a binding at all — an identifier or a
  * property access, through parentheses and casts. A literal, a call, an
  * operator expression: nothing to resolve. */
@@ -1854,6 +1988,10 @@ function mightNameBinding(node: ts.Node): boolean {
   let current: ts.Node | undefined = node;
   for (let hops = 0; hops < 16 && current !== undefined; hops++) {
     if (ts.isIdentifier(current) || ts.isPropertyAccessExpression(current)) return true;
+    if (ts.isExpressionWithTypeArguments(current)) {
+      current = current.expression;
+      continue;
+    }
     if (
       ts.isParenthesizedExpression(current) ||
       ts.isAsExpression(current) ||

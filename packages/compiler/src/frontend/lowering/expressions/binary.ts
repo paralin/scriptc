@@ -59,7 +59,10 @@ import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
 import { errorToStringCall } from "../error-methods.js";
 import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
-import { noteDynamicIdentityComparison } from "../generic-functions.js";
+import {
+  noteDynamicIdentityComparison,
+  notePinnedIdentityComparison,
+} from "../generic-functions.js";
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
@@ -2624,6 +2627,17 @@ export function lowerStrictEquality(
   // assignable to the other — a tuple-typed listeners() element
   // against a prefix-declared handler): the pointer answers it.
   if (idLeft.type.kind === "func" && idRight.type.kind === "func") {
+    // Two pins of ONE generic declaration at different signatures are
+    // different compiled closures; the whole-program check refuses the
+    // compare (checkGenericIdentityPins).
+    notePinnedIdentityComparison(
+      lowerer,
+      node,
+      leftNode,
+      rightNode,
+      idLeft.kind === "closure" ? idLeft.fnName : undefined,
+      idRight.kind === "closure" ? idRight.fnName : undefined,
+    );
     return {
       kind: "bin",
       op: negated ? "!==" : "===",
