@@ -13,6 +13,7 @@ import { keyedHelperName } from "../stable-names.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
 import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
+import { wrapperConstructors } from "../primitive-wrappers.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
@@ -5620,13 +5621,27 @@ function jsPrimitivePrototypeValue(
 ): IrExpr | null {
   if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   const loc = locOf(expr);
-  const value = (kind: string): IrExpr => ({
-    kind: "libCall",
-    fn: "dyn.builtinPrototype",
-    args: [{ kind: "strLit", value: kind, type: STRING, loc }],
-    type: DYN,
-    loc,
-  });
+  const value = (kind: string): IrExpr =>
+    kind === "Boolean"
+      ? // The wrapper unit's Boolean.prototype is the object Boolean
+        // instances inherit from, so its valueOf/toString are the interned
+        // members and accept a primitive boolean or a Boolean wrapper
+        // receiver (the dyn.builtinPrototype builder takes only the kind's
+        // primitives).
+        {
+          kind: "libCall",
+          fn: "wrapper.booleanPrototype",
+          args: [wrapperConstructors(lowerer, loc)[2]!],
+          type: DYN,
+          loc,
+        }
+      : {
+          kind: "libCall",
+          fn: "dyn.builtinPrototype",
+          args: [{ kind: "strLit", value: kind, type: STRING, loc }],
+          type: DYN,
+          loc,
+        };
   const receiver = expr.expression;
   if (ts.isPropertyAccessExpression(receiver) && receiver.name.text === "prototype") {
     const kind = primitivePrototypeKind(lowerer, receiver);

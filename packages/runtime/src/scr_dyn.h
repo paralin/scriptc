@@ -1498,6 +1498,13 @@ ScrDyn *scr_js_wrapper_guard(ScrDyn *value, ScrStr *consumer);
 ScrArr *scr_js_wrapper_guard_list(ScrArr *values, ScrStr *consumer);
 bool scr_js_wrapper_is_string_method(ScrDyn *member, ScrStr *name);
 ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
+/* Boolean.prototype as a value in a JavaScript source: the wrapper unit's
+ * prototype object for Boolean, which is also the prototype of
+ * `new Boolean(v)` instances, so its valueOf/toString accept a primitive
+ * boolean or a Boolean wrapper receiver and a foreign receiver throws
+ * Node's brand-check TypeError. +1; `constructor` is the compiled Boolean
+ * constructor value. */
+ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor);
 ScrDyn *scr_dyn_util_type_value(const ScrDyn *value, const ScrStr *probe);
 void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item);
 /* Spread completion for a runtime-arity argument list (`f(...xs)` in the
