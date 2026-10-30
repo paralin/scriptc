@@ -9127,11 +9127,16 @@ function lowerObjectStaticCall(
       };
     }
     if (value.type.kind === "dyn") {
+      // The kind is only known at runtime: the queries refuse a native
+      // handle or a promise, whose integrity state scriptc does not track
+      // (Object.preventExtensions and Object.seal do not change it, so any
+      // answer would be invented). The static arms above keep the plain
+      // queries for the kinds whose state is modeled.
       const operation = {
         preventExtensions: "dyn.preventExtensions",
-        isExtensible: "dyn.isExtensible",
+        isExtensible: "dyn.isExtensibleQuery",
         seal: "dyn.seal",
-        isSealed: "dyn.isSealed",
+        isSealed: "dyn.isSealedQuery",
       } as const;
       const fn = operation[member as keyof typeof operation];
       if (!member.startsWith("is")) noteUntypedIntegrity(lowerer, call.arguments.nodes[0]!);
