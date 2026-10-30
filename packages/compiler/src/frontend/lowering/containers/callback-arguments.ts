@@ -2,6 +2,7 @@ import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { isThisParameter } from "../call-signatures.js";
 import { primitiveElement } from "../array-values.js";
 import { varRef } from "../../../ir/build.js";
 import { typeKey } from "../../type-mapper.js";
@@ -37,6 +38,16 @@ export function requireProducedArrayElement(
       `${producer} with a callback returning '${lowerer.fmt(elem)}' values (arrays of this element kind have no representation — store the values individually)`,
     );
   }
+}
+
+/** A callback's `(value, index, array)` positions count from its first
+ * data parameter: TypeScript declares an explicit `this` parameter
+ * first, and it is not one of them. */
+function callbackDataParams(
+  node: ts.ArrowFunction | ts.FunctionExpression,
+): readonly ts.ParameterDeclaration[] {
+  const params: readonly ts.ParameterDeclaration[] = node.parameters.nodes;
+  return params.length > 0 && isThisParameter(params[0]!) ? params.slice(1) : params;
 }
 
 /** Lowers and validates a HOF callback argument. The lib declares optional
@@ -133,7 +144,7 @@ export function lowerArrayCallback(
   const previousImplicit = lowerer.implicitParamTypes;
   let contextualTs: Map<ts.Symbol, ts.Type> | null = null;
   if (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode)) {
-    argNode.parameters.nodes.forEach((param, i) => {
+    callbackDataParams(argNode).forEach((param, i) => {
       const expected = full[i];
       if (
         expected === undefined ||
@@ -195,7 +206,7 @@ export function lowerArrayCallback(
   // that stored layout; its names then see the optional values.
   const patterns: { node: ts.Node; previous: IrType | undefined }[] = [];
   if (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode)) {
-    argNode.parameters.nodes.forEach((param, i) => {
+    callbackDataParams(argNode).forEach((param, i) => {
       const expected = full[i];
       if (
         expected === undefined ||
