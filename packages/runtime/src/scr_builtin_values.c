@@ -755,3 +755,186 @@ ScrDyn *scr_path_to_namespaced_value(ScrDyn *path, bool win32) {
   scr_str_release(text);
   return out;
 }
+
+/* ── Static members of builtin constructor values ─────────────────────
+ * A member read on a builtin constructor held as an untyped value
+ * (`globalThis[name].resolve`, `this.Promise.resolve` in a sloppy-mode
+ * function, `o.constructor.keys`) answers Node's own static members. The
+ * program's lookup (scr_builtin_statics_install) answers the members it
+ * holds values for, the same values their static spellings read. The other
+ * function members are fenced functions with Node's name and length, which
+ * throw SC1090 when called, and the numeric constants are their values. */
+
+/* The constructors with static members, indexed by ScrBvStatic.owner. */
+static const char *const scr_bv_static_owners[] = {
+  "Object", "Array", "Promise", "Number", "String", "BigInt", "Date", "RegExp", "Map", "Error",
+  "ArrayBuffer", "Proxy", "BigInt64Array", "BigUint64Array",
+};
+
+typedef struct {
+  const char *key;
+  uint8_t owner;
+  /* The function's length, or SCR_BV_CONSTANT for a numeric constant
+   * (scr_bv_static_constant). */
+  uint8_t length;
+} ScrBvStatic;
+#define SCR_BV_CONSTANT 0xff
+
+/* Node 24's own static members of each constructor, in Node's order.
+ * Members with symbol keys, and RegExp's legacy accessors, are not
+ * listed. */
+static const ScrBvStatic scr_bv_statics[] = {
+  {"assign", 0, 2}, {"getOwnPropertyDescriptor", 0, 2}, {"getOwnPropertyDescriptors", 0, 1},
+  {"getOwnPropertyNames", 0, 1}, {"getOwnPropertySymbols", 0, 1}, {"hasOwn", 0, 2}, {"is", 0, 2},
+  {"preventExtensions", 0, 1}, {"seal", 0, 1}, {"create", 0, 2}, {"defineProperties", 0, 2},
+  {"defineProperty", 0, 3}, {"freeze", 0, 1}, {"getPrototypeOf", 0, 1}, {"setPrototypeOf", 0, 2},
+  {"isExtensible", 0, 1}, {"isFrozen", 0, 1}, {"isSealed", 0, 1}, {"keys", 0, 1}, {"entries", 0, 1},
+  {"fromEntries", 0, 1}, {"values", 0, 1}, {"groupBy", 0, 2},
+  {"isArray", 1, 1}, {"from", 1, 1}, {"fromAsync", 1, 1}, {"of", 1, 0},
+  {"all", 2, 1}, {"allSettled", 2, 1}, {"any", 2, 1}, {"race", 2, 1}, {"resolve", 2, 1},
+  {"reject", 2, 1}, {"withResolvers", 2, 0}, {"try", 2, 1},
+  {"isFinite", 3, 1}, {"isInteger", 3, 1}, {"isNaN", 3, 1}, {"isSafeInteger", 3, 1},
+  {"parseFloat", 3, 1}, {"parseInt", 3, 2}, {"MAX_VALUE", 3, SCR_BV_CONSTANT},
+  {"MIN_VALUE", 3, SCR_BV_CONSTANT}, {"NaN", 3, SCR_BV_CONSTANT}, {"NEGATIVE_INFINITY", 3, SCR_BV_CONSTANT},
+  {"POSITIVE_INFINITY", 3, SCR_BV_CONSTANT}, {"MAX_SAFE_INTEGER", 3, SCR_BV_CONSTANT},
+  {"MIN_SAFE_INTEGER", 3, SCR_BV_CONSTANT}, {"EPSILON", 3, SCR_BV_CONSTANT},
+  {"fromCharCode", 4, 1}, {"fromCodePoint", 4, 1}, {"raw", 4, 1},
+  {"asUintN", 5, 2}, {"asIntN", 5, 2},
+  {"now", 6, 0}, {"parse", 6, 1}, {"UTC", 6, 7},
+  {"escape", 7, 1},
+  {"groupBy", 8, 2},
+  {"captureStackTrace", 9, 2}, {"prepareStackTrace", 9, 2}, {"isError", 9, 1},
+  {"isView", 10, 1},
+  {"revocable", 11, 2},
+  {"BYTES_PER_ELEMENT", 12, SCR_BV_CONSTANT}, {"BYTES_PER_ELEMENT", 13, SCR_BV_CONSTANT},
+};
+#define SCR_BV_STATICS (sizeof scr_bv_statics / sizeof scr_bv_statics[0])
+
+/* The value of a numeric constant member. */
+static double scr_bv_static_constant(const ScrBvStatic *entry) {
+  static const struct { const char *key; double value; } constants[] = {
+    {"MAX_VALUE", 1.7976931348623157e+308}, {"MIN_VALUE", 5e-324}, {"NaN", NAN},
+    {"NEGATIVE_INFINITY", -INFINITY}, {"POSITIVE_INFINITY", INFINITY},
+    {"MAX_SAFE_INTEGER", 9007199254740991.0}, {"MIN_SAFE_INTEGER", -9007199254740991.0},
+    {"EPSILON", 2.220446049250313e-16}, {"BYTES_PER_ELEMENT", 8},
+  };
+  for (size_t i = 0; i < sizeof constants / sizeof constants[0]; i++)
+    if (strcmp(constants[i].key, entry->key) == 0) return constants[i].value;
+  return NAN;
+}
+
+static SCR_TL ScrDyn *scr_bv_static_fences[SCR_BV_STATICS];
+static SCR_TL ScrDyn *scr_bv_statics_lookup;
+
+static void scr_bv_statics_cleanup(void) {
+  for (size_t i = 0; i < SCR_BV_STATICS; i++) {
+    scr_dyn_release(scr_bv_static_fences[i]);
+    scr_bv_static_fences[i] = NULL;
+  }
+  scr_dyn_release(scr_bv_statics_lookup);
+  scr_bv_statics_lookup = NULL;
+  scr_dyn_builtin_static_fn = NULL;
+}
+
+static ScrDyn *scr_bv_static_fence_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args; (void)argc;
+  const ScrBvStatic *entry = closure->fn;
+  char message[160];
+  int length = snprintf(message, sizeof message,
+                        "'%s.%s' as a function value (call it directly) is not supported yet [SC1090]",
+                        scr_bv_static_owners[entry->owner], entry->key);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, "SC1090");
+  return NULL;
+}
+
+/* The entry for `owner.key`, or NULL when Node's `owner` has no such own
+ * static member. */
+static const ScrBvStatic *scr_bv_static_entry(const char *owner, size_t owner_len, const char *key,
+                                              size_t key_len) {
+  for (size_t i = 0; i < SCR_BV_STATICS; i++) {
+    const ScrBvStatic *entry = &scr_bv_statics[i];
+    const char *name = scr_bv_static_owners[entry->owner];
+    if (strlen(name) == owner_len && memcmp(name, owner, owner_len) == 0 && strlen(entry->key) == key_len &&
+        memcmp(entry->key, key, key_len) == 0)
+      return entry;
+  }
+  return NULL;
+}
+
+/* The runtime's value for a listed member (+1): the constant, or the
+ * member's fenced function, one per thread. */
+static ScrDyn *scr_bv_static_value(const ScrBvStatic *entry) {
+  if (entry->length == SCR_BV_CONSTANT) return scr_dyn_new_num(scr_bv_static_constant(entry));
+  size_t index = (size_t)(entry - scr_bv_statics);
+  if (!scr_bv_static_fences[index])
+    scr_bv_static_fences[index] = scr_dyn_new_func(scr_closure_new((void *)entry, 0), scr_bv_static_fence_call,
+                                                   (uint32_t)entry->length, "native:function", entry->key);
+  return scr_dyn_retain(scr_bv_static_fences[index]);
+}
+
+/* The property descriptor of a static member holding `value` (+1, takes
+ * `value`): functions are writable and configurable, constants neither;
+ * no static member is enumerable. */
+static ScrDyn *scr_bv_static_descriptor(ScrDyn *value) {
+  bool function = value->kind == SCR_DYN_FUNC;
+  ScrDyn *out = scr_dyn_new_obj();
+  scr_dyn_obj_set(out, "value", 5, value);
+  scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(function));
+  scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(function));
+  return out;
+}
+
+/* The constructor name of a builtin constructor value the runtime interns
+ * (scr_dyn_global_constructor, scr_dyn_array_constructor,
+ * scr_array_buffer_constructor), or NULL. */
+static const char *scr_bv_constructor_name(const ScrDyn *fn) {
+  const char *sig = fn->v.fn.sig;
+  if (!sig || !fn->v.fn.name) return NULL;
+  return strcmp(sig, "native:constructor") == 0 || strcmp(sig, "native:Array") == 0 ||
+      strcmp(sig, "native:ArrayBuffer") == 0
+    ? fn->v.fn.name
+    : NULL;
+}
+
+/* scr_dyn_builtin_static_fn: the program's value first, then the
+ * runtime's. */
+static ScrDyn *scr_bv_builtin_static(const ScrDyn *fn, const char *key, size_t key_len, bool descriptor) {
+  ScrDyn *value = NULL;
+  if (scr_bv_statics_lookup) {
+    ScrStr *text = scr_str_new(key, key_len);
+    ScrDyn *args[] = {(ScrDyn *)fn, scr_dyn_new_str(text)};
+    scr_str_release(text);
+    value = scr_bv_statics_lookup->v.fn.thunk(scr_bv_statics_lookup->v.fn.clo, args, 2);
+    scr_dyn_release(args[1]);
+    if (!value) return NULL;
+    if (value->kind == SCR_DYN_NULL) {
+      scr_dyn_release(value);
+      value = NULL;
+    }
+  }
+  if (!value) {
+    const char *owner = scr_bv_constructor_name(fn);
+    const ScrBvStatic *entry = owner ? scr_bv_static_entry(owner, strlen(owner), key, key_len) : NULL;
+    if (!entry) return NULL;
+    value = scr_bv_static_value(entry);
+  }
+  return descriptor ? scr_bv_static_descriptor(value) : value;
+}
+
+static void scr_bv_statics_register(void) {
+  if (scr_dyn_builtin_static_fn) return;
+  scr_dyn_builtin_static_fn = scr_bv_builtin_static;
+  scr_atexit(scr_bv_statics_cleanup);
+}
+
+void scr_builtin_statics_install(ScrDyn *lookup) {
+  scr_bv_statics_register();
+  if (scr_bv_statics_lookup || lookup->kind != SCR_DYN_FUNC) return;
+  scr_bv_statics_lookup = scr_dyn_retain(lookup);
+}
+
+ScrDyn *scr_dyn_builtin_static(const ScrStr *owner, const ScrStr *key) {
+  const ScrBvStatic *entry = scr_bv_static_entry(owner->data, owner->len, key->data, key->len);
+  return entry ? scr_bv_static_value(entry) : scr_dyn_new_null();
+}

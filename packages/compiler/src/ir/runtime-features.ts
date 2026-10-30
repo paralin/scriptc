@@ -1043,6 +1043,8 @@ const RUNTIME_FEATURE_RULES = {
       "path.parseValue",
       "path.formatValue",
       "path.toNamespacedValue",
+      "dyn.installBuiltinStatics",
+      "dyn.builtinStatic",
     ],
   }),
   /** The stream unit emits through the emitter unit, also when the
