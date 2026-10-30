@@ -1,5 +1,5 @@
 import { shapeOverlayAnnotated } from "../shape-inference/index.js";
-import { documentedParameter } from "./call-signatures.js";
+import { documentedParameter, generatorParamsBindAtCall } from "./call-signatures.js";
 import { staticNameBindings } from "./static-function-names.js";
 import { positionTag } from "./structural-positions.js";
 import { keyedHelperName } from "./stable-names.js";
@@ -1370,11 +1370,11 @@ export function lowerGenericInstance(
     // threaded — a default mentioning T resolves like any body expression.
     const declared = lowerer.declareParams(decl.parameters.nodes, inst.params);
     params.push(...declared.params, ...captureParams);
-    // See lowerFunction: a generator binds its parameters at the CALL, so
-    // a prologue that destructures or defaults runs before the spawn
-    // wrapper returns the generator object. The receiver materialization
+    // See lowerFunction: a generator binds its parameters at the CALL
+    // exactly when that is observable. The receiver materialization
     // (`staticReceiver`) is call machinery, not parameter binding.
-    const bindsAtCall = isGenerator && declared.prologue.length > 0;
+    const bindsAtCall =
+      isGenerator && declared.prologue.length > 0 && generatorParamsBindAtCall(decl);
     const body = [
       ...receiverInit,
       ...declared.prologue,

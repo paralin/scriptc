@@ -198,7 +198,19 @@ function* pick({ a }: { a: number }): Generator<number, void, undefined> {
 function* plain(a: number): Generator<number, void, undefined> {
   yield a;
 }
-console.log(pick({ a: 1 }).next().value, plain(2).next().value);
+const STEP = 2;
+function* constantDefault(a = STEP + 1): Generator<number, void, undefined> {
+  yield a;
+}
+function* evaluatedDefault(a = pick({ a: 3 }).next().value ?? 0): Generator<number, void, undefined> {
+  yield a;
+}
+console.log(
+  pick({ a: 1 }).next().value,
+  plain(2).next().value,
+  constantDefault().next().value,
+  evaluatedDefault().next().value,
+);
 `);
   expect(definition(llvm, "sc_gs_pick")).toContain("call void @scr_gen_bind(ptr %gg)");
   expect(definition(llvm, "sc_gs_pick")).toMatch(
@@ -208,9 +220,15 @@ console.log(pick({ a: 1 }).next().value, plain(2).next().value);
   // resumes after it.
   expect(definition(llvm, "sc_f_pick")).toContain("@llvm.coro.suspend(");
   // Identifier-only parameters run nothing before the first resume, so the
-  // wrapper stays the allocation it always was.
+  // wrapper stays the allocation it always was — and so does a default that
+  // is a constant expression, which only selects a value.
   expect(definition(llvm, "sc_gs_plain")).not.toContain("@scr_gen_bind(");
-  // Only the bindAtCall wrapper declares it.
+  expect(definition(llvm, "sc_gs_constantDefault")).not.toContain("@scr_gen_bind(");
+  // A default that evaluates anything binds at the call.
+  expect(definition(llvm, "sc_gs_evaluatedDefault")).toContain("call void @scr_gen_bind(ptr %gg)");
+  // The two bindAtCall wrappers are the only callers, and the module
+  // declares the runtime entry once.
+  expect(llvm.match(/call void @scr_gen_bind\(/g)?.length).toBe(2);
   expect(llvm.match(/declare void @scr_gen_bind\(/g)?.length).toBe(1);
 });
 

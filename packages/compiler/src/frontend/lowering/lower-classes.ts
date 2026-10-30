@@ -104,6 +104,7 @@ import {
   checkedJsDocumentedParameter,
   documentedParameter,
   generatorMeta,
+  generatorParamsBindAtCall,
   type ParamShape,
 } from "./call-signatures.js";
 import { omittedArgFor } from "./call-arguments.js";
@@ -8960,11 +8961,11 @@ function lowerClassMethodBody(
       if (shape.mode === "arguments") fnCtx.argumentsLocal = local;
     }
     // See lowerFunction: a generator binds its parameters at the CALL
-    // (FunctionDeclarationInstantiation runs before GeneratorStart), so a
-    // prologue that destructures or defaults must run before the spawn
-    // wrapper returns the generator object. `this` is param 0 here, not a
-    // prologue statement, so a non-empty prologue is parameter binding.
-    const bindsAtCall = genCh !== null && declared.prologue.length > 0;
+    // (FunctionDeclarationInstantiation runs before GeneratorStart) exactly
+    // when that is observable — a destructuring or rest pattern, a default
+    // that evaluates anything, or a body that reads `arguments`.
+    const bindsAtCall =
+      genCh !== null && declared.prologue.length > 0 && generatorParamsBindAtCall(fnLike);
     const body = [
       ...declared.prologue,
       ...(bindsAtCall ? [{ kind: "genBindBarrier" as const, loc: locOf(fnLike) }] : []),
@@ -9037,10 +9038,10 @@ export function lowerStaticMethod(
       declared.params.push({ localId: local.id, name: "%arguments", type: DYN });
       fnCtx.argumentsLocal = local;
     }
-    // See lowerFunction: a generator binds its parameters at the CALL, so
-    // a prologue that destructures or defaults runs before the spawn
-    // wrapper returns the generator object.
-    const bindsAtCall = genCh !== null && declared.prologue.length > 0;
+    // See lowerFunction: a generator binds its parameters at the CALL
+    // exactly when that is observable.
+    const bindsAtCall =
+      genCh !== null && declared.prologue.length > 0 && generatorParamsBindAtCall(entry.member);
     const body = [
       ...declared.prologue,
       ...(bindsAtCall ? [{ kind: "genBindBarrier" as const, loc: locOf(entry.member) }] : []),

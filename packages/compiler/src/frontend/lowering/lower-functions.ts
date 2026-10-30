@@ -37,7 +37,12 @@ import {
   appendImplicitUndefinedReturn,
   blockBodyOf,
 } from "./function-returns.js";
-import { generatorMeta, isThisParameter, type ParamShape } from "./call-signatures.js";
+import {
+  generatorMeta,
+  generatorParamsBindAtCall,
+  isThisParameter,
+  type ParamShape,
+} from "./call-signatures.js";
 import { isStrictCode } from "./strict-mode.js";
 import { lowerSloppyGlobalReceiver } from "./lower-global-value.js";
 import { noteObjectMethodName } from "./function-names.js";
@@ -524,12 +529,13 @@ export function lowerLambda(
     }
     dropUnreadReceiver(fnCtx, prologue, receiver);
     // Generator parameters bind at the CALL (FunctionDeclarationInstantiation
-    // runs before GeneratorStart): a prologue statement that destructures,
-    // defaults or builds the arguments object must not wait for the first
-    // resume. Only such statements earn the barrier — an identifier-only
-    // parameter list, with the receiver read it implies, runs nothing before
-    // the first `.next()`.
-    const bindsAtCall = isGenerator && prologue.some((stmt) => stmt !== receiver);
+    // runs before GeneratorStart) exactly when that is observable: a
+    // destructuring or rest pattern, a default that evaluates anything, or a
+    // body that reads `arguments`. An identifier-only list — even with
+    // literal defaults — binds nothing observable, so it keeps the lowering
+    // that binds on the first resume and compiles byte-identically.
+    const bindsAtCall =
+      isGenerator && prologue.some((stmt) => stmt !== receiver) && generatorParamsBindAtCall(node);
     body = bindsAtCall
       ? [...prologue, { kind: "genBindBarrier" as const, loc }, ...body]
       : [...prologue, ...body];
@@ -661,14 +667,14 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
       ? lowerUndefinedResultBody(lowerer, decl, undefinedResult, lowerBody)
       : lowerBody();
     dropUnreadReceiver(ctx, prologue, receiver);
-    // See lowerLambda: a generator binds its parameters at the CALL, so a
-    // prologue that destructures or defaults must run before the spawn
-    // wrapper returns the generator object. The receiver read and the
-    // arity bookkeeping are the call machinery, not parameter binding, and
-    // keep the unbarriered shape.
+    // See lowerLambda: a generator binds its parameters at the CALL exactly
+    // when that is observable. The receiver read and the arity bookkeeping
+    // are the call machinery, not parameter binding, and keep the
+    // unbarriered shape.
     const bindsAtCall =
       sig.generator !== undefined &&
-      prologue.some((stmt) => stmt !== receiver && !argumentCount.includes(stmt));
+      prologue.some((stmt) => stmt !== receiver && !argumentCount.includes(stmt)) &&
+      generatorParamsBindAtCall(decl);
     const body = bindsAtCall
       ? [...prologue, { kind: "genBindBarrier" as const, loc: locOf(decl) }, ...statements]
       : [...prologue, ...statements];
