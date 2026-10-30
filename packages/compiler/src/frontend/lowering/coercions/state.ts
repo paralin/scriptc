@@ -16,6 +16,11 @@ export class CoercionState {
    * parameters may width-lift, and union fields may retag with trapping
    * arms (WidthLift checkedRetag). */
   checkedRetags = 0;
+  /** > 0 while a type assertion's operand lowers. The program claimed the
+   * value's shape, so a union slot inside it may retag with trapping arms
+   * (an arm the asserted target excludes throws, divergence 38's
+   * lying-assertion stance) instead of refusing the conversion. */
+  assertedOperand = 0;
   // Registry revisions invalidate only fully validated copy-only routes.
   readonly copyRetags = new Map<string, { name: string; shapes: number; unions: number }>();
   // Provenance for checked extraction; consumers must not infer it from names.

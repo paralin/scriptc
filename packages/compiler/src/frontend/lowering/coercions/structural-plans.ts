@@ -57,9 +57,10 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         lowerer.armTag(dst.unionId, UNDEFINED_T) >= 0
       )
         return { how: "unitRetag" };
-      // Inside a checked method adapter (contravariant positions): source
-      // arms with no destination home trap instead of refusing the pair.
-      if (lowerer.coercions.checkedRetags > 0) {
+      // Inside a checked method adapter (contravariant positions) and inside
+      // the operand of a type assertion: source arms with no destination
+      // home trap instead of refusing the pair.
+      if (lowerer.coercions.checkedRetags > 0 || lowerer.coercions.assertedOperand > 0) {
         const from = lowerer.unions.get(src.unionId);
         const to = lowerer.unions.get(dst.unionId);
         if (from && to) {

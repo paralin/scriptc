@@ -1431,7 +1431,18 @@ export function lowerAsExpression(
       (narrowed === null && (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0);
     if (!bridged) lowerer.unsupported("SC1063", expr);
   }
-  const inner = lowerer.lowerExpr(expr.expression);
+  // `{ ...message, content } as T`: the program claimed the literal's shape,
+  // so a union-valued member converts in a checked context — an arm the
+  // asserted target excludes throws the catchable TypeError (a lying
+  // assertion) instead of refusing the member (coercions.assertedOperand).
+  const assertedOperand = expr.expression.kind === ts.SyntaxKind.ObjectLiteralExpression;
+  if (assertedOperand) lowerer.coercions.assertedOperand++;
+  let inner: IrExpr;
+  try {
+    inner = lowerer.lowerExpr(expr.expression);
+  } finally {
+    if (assertedOperand) lowerer.coercions.assertedOperand--;
+  }
   const use = runtimeOptionalUseOf(expr);
   if (inner.type.kind === "union" && runtimeOptionalAssertionErases(lowerer, expr, inner, use))
     return inner;

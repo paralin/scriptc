@@ -13121,6 +13121,14 @@ export class Lowerer {
       if (helper) {
         return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };
       }
+      // Inside a type assertion's operand the program claimed the value's
+      // shape: an arm the asserted target excludes traps (divergence 38's
+      // lying-assertion stance) instead of refusing the whole conversion.
+      if (this.coercions.assertedOperand > 0) {
+        const checked = this.widthLiftPlan(expr.type, expected);
+        if (checked?.how === "checkedRetag")
+          return this.applyWidthLift(checked, expr, expected, expr.loc);
+      }
       return assertedConversion(this, expr, expected) ?? expr;
     }
     if (expr.type.kind === "void") {
