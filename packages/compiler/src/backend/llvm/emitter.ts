@@ -2826,6 +2826,12 @@ export class LlEmitter {
    * displayName, else its sourceName. Function boxes without a static name
    * look the closure's entry up in this table. */
   private closureNameEntries: readonly { entry: string; name: string }[] | undefined;
+  /** The declared functions `closureNames` lists by their wrapper. A scan
+   * sees closures in statements the emitter never reaches (a statement
+   * after a runtimeFence: the fence always jumps), so some of these names
+   * never enter `fnValues`; emitFnValueDefs defines their wrapper anyway,
+   * because the table's entry has to resolve. */
+  private readonly closureWrapperNames = new Set<string>();
   closureNames(): readonly { entry: string; name: string }[] {
     if (this.closureNameEntries !== undefined) return this.closureNameEntries;
     const entries = new Map<string, string>();
@@ -2840,6 +2846,7 @@ export class LlEmitter {
         if (target === undefined || name === undefined || name === "") return true;
         const entry =
           target.captures === undefined ? mangleWrapper(node.fnName) : this.callTarget(node.fnName);
+        if (target.captures === undefined) this.closureWrapperNames.add(node.fnName);
         if (!entries.has(entry)) entries.set(entry, name);
         return true;
       });
@@ -2899,10 +2906,14 @@ export class LlEmitter {
 
   /** Env-signature wrappers + interned immortal closures for declared
    * functions used as values (the runtime ABI’s sc_w_/sc_fc_ pair): every
-   * mention of `f` yields the same pointer, so `f === f` holds. */
+   * mention of `f` yields the same pointer, so `f === f` holds. The
+   * closure-name table's wrapper entries are included even when their
+   * closure was never emitted (see closureWrapperNames). */
   emitFnValueDefs(): string[] {
     const out: string[] = [];
-    for (const name of this.fnValues) {
+    const names = new Set(this.fnValues);
+    for (const name of this.closureWrapperNames) names.add(name);
+    for (const name of names) {
       const fn = this.fnByName.get(name)!;
       const params = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`);
       const args = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`).join(", ");
