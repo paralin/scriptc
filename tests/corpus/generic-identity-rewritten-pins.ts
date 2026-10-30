@@ -27,3 +27,15 @@ function compare(f: (x: any) => any = anyPin): boolean {
   return num === f;
 }
 console.log("parameter-argument", compare((x: any) => x), compare(num));
+// A readonly field its constructor assigns holds what the constructor stores.
+class Assigned {
+  readonly held: (x: any) => any = anyPin;
+  constructor(f: (x: any) => any) {
+    this.held = f;
+  }
+}
+console.log(
+  "readonly-constructor",
+  num === new Assigned((x: any) => x).held,
+  num === new Assigned(num).held,
+);

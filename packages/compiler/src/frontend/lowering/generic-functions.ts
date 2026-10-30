@@ -1897,14 +1897,57 @@ function pinnedInstanceBehind(
 
 /** Whether `decl` is a variable or property that keeps the value it starts
  * with: a variable with an identifier name that nothing writes, or a
- * readonly property. A parameter's default is not its value: a call can pass
- * any function for it. */
+ * readonly property its class never assigns (a constructor can). A
+ * parameter's default is not its value: a call can pass any function for
+ * it. */
 function holdsItsInitializer(lowerer: Lowerer, decl: ts.Node): boolean {
   if (ts.isPropertyDeclaration(decl))
-    return (ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Readonly) !== 0;
+    return (
+      (ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Readonly) !== 0 &&
+      !classWritesField(decl)
+    );
   if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return false;
   const binding = lowerer.checker.getSymbolAtLocation(decl.name);
   return binding !== undefined && bindingNeverReassigned(lowerer, binding, decl);
+}
+
+/** Whether the class that declares `field` assigns a property of its name
+ * anywhere in its body: a readonly field can still be assigned in a
+ * constructor or a static block. Any receiver counts, which only
+ * over-approximates. */
+function classWritesField(field: ts.PropertyDeclaration): boolean {
+  const name = field.name;
+  if (!ts.isIdentifier(name) && !ts.isStringLiteral(name)) return true;
+  const text = name.text;
+  const targets = (target: ts.Node): boolean => {
+    let e = target;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isPropertyAccessExpression(e)) return e.name.text === text;
+    if (ts.isElementAccessExpression(e))
+      return !ts.isStringLiteralLike(e.argumentExpression) || e.argumentExpression.text === text;
+    return false;
+  };
+  let written = false;
+  const visit = (node: ts.Node): void => {
+    if (written) return;
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      targets(node.left)
+    )
+      written = true;
+    else if (
+      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      (node.operator === ts.SyntaxKind.PlusPlusToken ||
+        node.operator === ts.SyntaxKind.MinusMinusToken) &&
+      targets(node.operand)
+    )
+      written = true;
+    else ts.forEachChild(node, visit);
+  };
+  if (field.parent !== undefined) visit(field.parent);
+  return written;
 }
 
 /** The generic declaration whose value instance an expression names, when
