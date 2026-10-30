@@ -64,7 +64,16 @@ export function lowerArrayCallback(
   arrT: IrType,
   bindUntyped = false,
   expectedReturn?: IrType,
-): { fnArg: IrExpr & { type: IrType & { kind: "func" } }; arity: number; unread: boolean } {
+): {
+  fnArg: IrExpr & { type: IrType & { kind: "func" } };
+  arity: number;
+  unread: boolean;
+  /** The lowered callback's own type, before any slot adaptation below. A
+   * caller that synthesizes the call itself needs the unadapted ABI: a JS
+   * function whose `arguments` slot is its ABI ({params: [], rest: true})
+   * is adapted to the visible slot here, losing that fact. */
+  rawType: IrType;
+} {
   // `xs.map(((x) => x))`: a parenthesized callback is the function itself.
   while (ts.isParenthesizedExpression(argNode)) argNode = argNode.expression;
   // The ambient `Boolean` as the callback (`flags.every(Boolean)`,
@@ -83,11 +92,8 @@ export function lowerArrayCallback(
     if (valueT === undefined || valueT.kind === "void" || isUnitType(valueT))
       lowerer.badType(argNode, lowerer.typeOf(argNode));
     if (valueT.kind === "union") lowerer.requireTruthyUnion(valueT.unionId, argNode);
-    return {
-      fnArg: truthyFilterCallback(lowerer, valueT, locOf(argNode)),
-      arity: 1,
-      unread: false,
-    };
+    const truthy = truthyFilterCallback(lowerer, valueT, locOf(argNode));
+    return { fnArg: truthy, arity: 1, unread: false, rawType: truthy.type };
   }
   // The ambient `String` (`values.map(String)`): String(value) converts its
   // first argument as a direct call does, whatever the element type; the
@@ -101,7 +107,8 @@ export function lowerArrayCallback(
     const valueT = lead[0];
     if (valueT === undefined || valueT.kind === "void")
       lowerer.badType(argNode, lowerer.typeOf(argNode));
-    return { fnArg: stringConversionCallback(lowerer, valueT, argNode), arity: 1, unread: false };
+    const conversion = stringConversionCallback(lowerer, valueT, argNode);
+    return { fnArg: conversion, arity: 1, unread: false, rawType: conversion.type };
   }
   const full = [...lead, F64, arrT];
   // A DYN-receiver HOF's callback (`parsed.flatMap((value) => ...)`):
@@ -246,6 +253,7 @@ export function lowerArrayCallback(
     if (previousReturn === undefined) lowerer.contextualFunctionReturns.delete(argNode);
     else lowerer.contextualFunctionReturns.set(argNode, previousReturn);
   }
+  const rawType = fnArg.type;
   // A callback can accept a wider parameter type than the array supplies
   // (a reusable predicate over a union is common). Its closure still has
   // that wider ABI: adapt each actual argument before invoking it, just
@@ -292,6 +300,7 @@ export function lowerArrayCallback(
     fnArg: fnArg as IrExpr & { type: IrType & { kind: "func" } },
     arity: fnArg.type.params.length,
     unread: !readsParameter(argNode, lead.length - 1),
+    rawType,
   };
 }
 

@@ -2471,42 +2471,77 @@ export function lowerArrayReduceCall(
   const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   const hasInit = call.arguments.nodes.length === 2;
-  const accT =
-    lowerer.runtimeOptionalReduceTypes.get(call) ??
-    (hasInit ? lowerer.irTypeOf(call) : arrayValueType(lowerer, elem));
-  if (accT.kind === "void" || accT.kind === "func") lowerer.badType(call, lowerer.typeOf(call));
+  const overrideT = lowerer.runtimeOptionalReduceTypes.get(call) ?? null;
+  const staticAccT =
+    overrideT ?? (hasInit ? lowerer.irTypeOf(call) : arrayValueType(lowerer, elem));
+  if (staticAccT.kind === "void" || staticAccT.kind === "func")
+    lowerer.badType(call, lowerer.typeOf(call));
   const lowered = lowerArrayCallback(
     lowerer,
     argNode,
-    [accT, arrayValueType(lowerer, elem)],
+    [staticAccT, arrayValueType(lowerer, elem)],
     arrT,
     false,
-    accT,
+    staticAccT,
   );
   const { fnArg, arity } = lowered;
+  // A JavaScript function with NO declared parameters whose body reads
+  // `arguments` has that hidden slot as its whole ABI, which the synthetic
+  // loop cannot fill: `callValue` passes exactly the declared parameters
+  // (none), so the callback would see an empty `arguments` where JavaScript
+  // passes (accumulator, element, index, array). Name the parameters
+  // instead; that is the same value with a checkable type. Read the
+  // callback's OWN type: the slot adaptation above (a dyn function boundary)
+  // erases the hidden slot from `fnArg.type`. A callback that names its
+  // parameters keeps working — `arguments` is built from the call's
+  // arguments there, not from a hidden slot.
+  if (
+    lowered.rawType.kind === "func" &&
+    lowered.rawType.params.length === 0 &&
+    lowered.rawType.rest === true &&
+    lowered.rawType.restAbi === undefined
+  )
+    lowerer.unsupported(
+      "SC1090",
+      argNode,
+      "a reduce callback that reads 'arguments' (name the parameters the callback uses)",
+    );
+  // The callback's own answer is what the accumulator receives. An inline
+  // lambda is contextually typed by the call (its returns coerce inside its
+  // own lowering), but a function DECLARATION keeps its declared return. When
+  // the checker's accumulator type cannot hold that value — `xs.reduce(function
+  // () { count++ }, 1)` answers undefined, a program the checker already
+  // diagnosed — the accumulator is the checked-dynamic value JavaScript
+  // produces instead of a miscast (the untyped-reduce shape; see
+  // accumulatorAdmitsAnswer).
+  const accT: IrType =
+    overrideT !== null || accumulatorAdmitsAnswer(lowerer, staticAccT, fnArg.type.ret)
+      ? staticAccT
+      : DYN;
   // Only an array that can hold elements outside its element type needs to
-  // leave an element its callback ignores unread.
+  // leave an element its callback ignores unread. A dynamic accumulator is
+  // the untyped shape; it keeps the single visit and the callback's own ABI.
   const unread = lowered.unread && elementMayBeForeign(lowerer, elem);
-  const fast = unread
-    ? null
-    : lowerFastCallback(
-        lowerer,
-        argNode,
-        [accT, arrayValueType(lowerer, elem)],
-        1,
-        elem,
-        arrT,
-        { fnArg, arity },
-        false,
-        accT,
-      );
+  const fast =
+    unread || accT.kind === "dyn"
+      ? null
+      : lowerFastCallback(
+          lowerer,
+          argNode,
+          [accT, arrayValueType(lowerer, elem)],
+          1,
+          elem,
+          arrT,
+          { fnArg, arity },
+          false,
+          accT,
+        );
   const helper = reduceHelper(
     lowerer,
     method,
     elem,
     accT,
-    fnArg.type.ret,
-    arity,
+    fnArg.type,
     hasInit,
     loc,
     callbackSite(fast ?? fnArg),
@@ -2519,6 +2554,39 @@ export function lowerArrayReduceCall(
   // effect, so the initial value still evaluates right after the callback.
   if (fast) args.push(fast);
   return { kind: "call", callee: helper, args, type: accT, loc };
+}
+
+/** The accumulator's value as the callback's first parameter declares it.
+ * Equal types pass the local straight through; a dynamic accumulator handed
+ * to a typed parameter converts at the call (the callback is lowered first,
+ * so its ABI is a fact and a value of another kind throws — "types don't
+ * lie"). */
+function accumulatorArgument(
+  lowerer: Lowerer,
+  param: IrType | undefined,
+  accT: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const value = varRef("acc.0", accT, loc);
+  return param === undefined || typeEquals(param, accT)
+    ? value
+    : lowerer.coerceToExpected(value, param);
+}
+
+/** Whether the checker's accumulator type stores the callback's answer
+ * itself. A scalar accumulator holds only its own scalar, and a void answer
+ * (a callback with no return statement) is `undefined`; both leave the
+ * checker's type unable to carry the value (a program the checker already
+ * diagnosed), which the reduction accumulates dynamically instead of
+ * miscasting. Every other pair keeps `coerceToExpected`'s static plan. */
+function accumulatorAdmitsAnswer(lowerer: Lowerer, accT: IrType, fnRet: IrType): boolean {
+  if (lowerer.coercibleValue(fnRet, accT)) return true;
+  if (fnRet.kind === "void" || isUnitType(fnRet)) return false;
+  return !(scalarKind(accT) && scalarKind(fnRet));
+}
+
+function scalarKind(t: IrType): boolean {
+  return t.kind === "f64" || t.kind === "string" || t.kind === "bool";
 }
 
 /** The reduce/reduceRight loops, from existing IR nodes:
@@ -2536,20 +2604,28 @@ function reduceHelper(
   method: "reduce" | "reduceRight",
   elem: IrType,
   accT: IrType,
-  fnRet: IrType,
-  arity: number,
+  fnArg: CallbackType,
   hasInit: boolean,
   loc: SrcLoc,
   site = "",
   fastT: CallbackType | null = null,
   unread = false,
 ): string {
+  // The callback's own ABI decides the helper's `f` slot: a dynamic
+  // accumulator (accT) is coerced at the call and the store, so the closure
+  // keeps the parameter types its lowering produced.
+  const fnT = fnArg;
+  const fnRet = fnT.ret;
+  const arity = fnT.params.length;
   const key = `${method}:${typeKey(elem)}:${typeKey(accT)}:${typeKey(fnRet)}:${arity}:${hasInit ? "init" : "seed"}${site}${fastT ? ":split" : ""}${unread ? ":unread" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%arr.${method}`, key);
   lowerer.arrHofHelpers.set(key, name);
-  if (method === "reduce")
+  // A dynamic accumulator stays out of the pipeline registry: the fused
+  // loops type their accumulator from the checker's view (arrHofInfo), which
+  // this shape contradicts.
+  if (method === "reduce" && accT.kind !== "dyn")
     lowerer.arrHofInfo.set(name, {
       method,
       elem,
@@ -2562,7 +2638,6 @@ function reduceHelper(
       unread,
     });
   const arrT = arrayOf(elem);
-  const fnT = funcOf([accT, arrayValueType(lowerer, elem), F64, arrT].slice(0, arity), fnRet);
 
   const n = varRef("n.0", F64, loc);
   const i = varRef("i.0", F64, loc);
@@ -2682,10 +2757,12 @@ function reduceHelper(
               {
                 kind: "callValue",
                 callee: varRef("f.0", fnT, loc),
-                args: [varRef("acc.0", accT, loc), visited(), i, varRef("a.0", arrT, loc)].slice(
-                  0,
-                  arity,
-                ),
+                args: [
+                  accumulatorArgument(lowerer, fnT.params[0], accT, loc),
+                  visited(),
+                  i,
+                  varRef("a.0", arrT, loc),
+                ].slice(0, arity),
                 type: fnRet,
                 loc,
               },
