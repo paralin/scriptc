@@ -45,6 +45,8 @@ export function withLibraryRuntimeFlavors(matrix) {
     // calls scr_arr_join_str, so the library flavors carry the same optional
     // unit the executable flavors compile.
     "scr_arr_join_str.c",
+    // Checked casts of untyped values to classes adopt them (dyn.adoptShared).
+    "scr_decl_adopt.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(
