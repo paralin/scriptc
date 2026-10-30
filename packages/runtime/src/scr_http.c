@@ -2885,6 +2885,14 @@ static int scr_http_scan_chunk_line_end(const char *buf, size_t len, size_t i, c
   return SCR_HTTP_SCAN_DONE;
 }
 
+/* The scan of a chunk line's extensions needs more input: MORE while the
+ * extension bytes so far are within the limit, the overflow error past it. */
+static int scr_http_scan_chunk_ext_more(size_t ext_bytes, ScrHttpParseError *err) {
+  if (ext_bytes > SCR_HTTP_MAX_CHUNK_EXTENSIONS)
+    return scr_http_scan_fail(err, "HPE_CHUNK_EXTENSIONS_OVERFLOW", "Chunk extensions overflow");
+  return SCR_HTTP_SCAN_MORE;
+}
+
 /* A chunk-size line at buf[0..len): 1*HEXDIG *( ";" name [ "=" value ] )
  * CRLF, each value a token or a quoted string. On DONE *size is the chunk
  * size and *line_end the offset after the CRLF. */
@@ -2922,8 +2930,10 @@ static int scr_http_scan_chunk_size(const char *buf, size_t len, unsigned long l
       i++;
       size_t start = i;
       if (i < len && buf[i] == '"') {
+        /* an open quoted value counts toward the limit before the scan
+         * waits for more input */
         for (i++;; i++) {
-          if (i >= len) return SCR_HTTP_SCAN_MORE;
+          if (i >= len) return scr_http_scan_chunk_ext_more(ext_bytes + (i - start), err);
           unsigned char ch = (unsigned char)buf[i];
           if (ch == '"') {
             i++;
@@ -2931,7 +2941,7 @@ static int scr_http_scan_chunk_size(const char *buf, size_t len, unsigned long l
           }
           if (ch == '\\') {
             i++;
-            if (i >= len) return SCR_HTTP_SCAN_MORE;
+            if (i >= len) return scr_http_scan_chunk_ext_more(ext_bytes + (i - start), err);
             ch = (unsigned char)buf[i];
             if (ch != '\t' && (ch < 0x20 || ch == 0x7f))
               return scr_http_scan_fail(err, "HPE_STRICT", "Invalid quoted-pair in chunk extensions quoted value");
@@ -3728,7 +3738,18 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
       unsigned long long size = 0;
       size_t consumed = 0;
       int scan = scr_http_scan_chunk_size(conn->buf, conn->len, &size, &consumed, &err);
-      if (scan == SCR_HTTP_SCAN_MORE) return;
+      if (scan == SCR_HTTP_SCAN_MORE) {
+        /* leading zeros do not change a chunk size and the parser accepts
+         * any number of them; dropping all but one of a long run keeps it
+         * from growing the buffer */
+        size_t zeros = 0;
+        while (zeros < conn->len && conn->buf[zeros] == '0') zeros++;
+        if (zeros > 64) {
+          memmove(conn->buf, conn->buf + zeros - 1, conn->len - (zeros - 1));
+          conn->len -= zeros - 1;
+        }
+        return;
+      }
       if (scan == SCR_HTTP_SCAN_ERROR) {
         scr_http_conn_parse_failed(conn, &err);
         return;
@@ -5625,6 +5646,18 @@ static void scr_http_client_conn_free(ScrHttpConn *conn) {
 
 /* ── http.request / http.get ─────────────────────────────────────────── */
 
+/* +1: the method with ASCII lower-case letters upper-cased, as Node's
+ * ClientRequest sends and reports it. */
+static ScrStr *scr_http_method_upper(ScrStr *method /*borrowed*/) {
+  size_t i = 0;
+  while (i < method->len && !(method->data[i] >= 'a' && method->data[i] <= 'z')) i++;
+  if (i == method->len) return scr_str_retain(method);
+  ScrStr *upper = scr_str_new(method->data, method->len);
+  for (; i < upper->len; i++)
+    if (upper->data[i] >= 'a' && upper->data[i] <= 'z') upper->data[i] = (char)(upper->data[i] - 'a' + 'A');
+  return upper;
+}
+
 static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double port,
                                                 ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                                 double timeout_ms, ScrArr *header_pairs /*borrowed*/,
@@ -5667,7 +5700,7 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
 #endif
   c->host = scr_str_retain(host);
   c->path = scr_str_retain(path);
-  c->method = scr_str_retain(method);
+  c->method = scr_http_method_upper(method);
   c->port = (int)port;
   c->default_port = default_port;
   size_t npairs = (size_t)scr_arr_len(header_pairs);
