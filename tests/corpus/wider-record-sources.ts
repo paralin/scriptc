@@ -92,6 +92,37 @@ console.log(viewed.x, JSON.stringify(viewed), String(pointView));
 type Box = { inner: Point; tag: string };
 const wideBox = { inner: { x: 1, y: 2 }, tag: "t", extra: true };
 const boxed: Box = wideBox;
-const boxView = boxed as unknown as { inner: Record<string, unknown> };
+const boxAny: unknown = boxed;
+const boxView = boxAny as { inner: Record<string, unknown> };
 boxView.inner.x = 7;
 console.log(boxed.inner.x, JSON.stringify(boxed));
+
+// A copy converted twice converts to a string and lists its values as the
+// first object does: its own valueOf and toString run, and its other
+// properties are listed after the declared ones.
+type Two = { a: number; b: number };
+const valued = { a: 1, b: 2, c: 3, valueOf() { return 42; } };
+const valuedTwo: Two = valued;
+const valuedOne: Plain = valuedTwo;
+console.log("" + valuedOne, `${valuedOne}`, String(valuedOne));
+type TwoNamed = { a: number; b: number; toString(): string };
+const named = { a: 1, b: 2, toString() { return "named"; }, valueOf() { return 7; } };
+const namedTwo: TwoNamed = named;
+const namedOne: Plain = namedTwo;
+console.log(String(namedOne), "" + namedOne);
+const listedTwo: Two = { a: 1, b: 2, c: 3 } as { a: number; b: number; c: number };
+const listedOne: Plain = listedTwo;
+console.log(Object.values(listedOne), Object.entries(listedOne));
+const parsedTwo: Two = JSON.parse('{"a":1,"b":2,"z":9}');
+const parsedOne: Plain = parsedTwo;
+console.log(Object.values(parsedOne), Object.entries(parsedOne));
+
+// A source type whose literals write its keys in more than one order
+// gives the copy its source's order.
+type Ordered = { a: number; b: number; c?: number };
+function ordered(flip: boolean): Ordered {
+  return flip ? { b: 2, a: 1 } : { a: 1, b: 2, c: 3 };
+}
+const flipped: Plain = ordered(true);
+const straight: Plain = ordered(false);
+console.log(Object.keys(flipped).join(","), JSON.stringify(flipped), JSON.stringify(straight));

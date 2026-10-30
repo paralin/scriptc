@@ -19,6 +19,7 @@ import {
   BOOL,
   DYN,
   F64,
+  KEY_ORDER_FIELD,
   STRING,
   arrayOf,
   type IrExpr,
@@ -182,30 +183,45 @@ export function answerLinkedCopies(
   shapeId: string,
   answer: (composed: IrExpr & { kind: "varRef" }) => IrStmt[],
 ): boolean {
-  const links = recordLinksInto(lowerer, shapeId);
-  if (links.length === 0) return false;
-  const loc = fn.loc;
   const recordT: IrType & { kind: "record" } = { kind: "record", shapeId };
-  const r = varRef(fn.params[0]!.localId, recordT, loc);
-  const prefix: IrStmt[] = [];
-  for (const link of links) {
+  const r = varRef(fn.params[0]!.localId, recordT, fn.loc);
+  const prefix = linkedCopyBranches(lowerer, fn, r, shapeId, answer);
+  if (prefix.length === 0) return false;
+  fn.body = [...prefix, ...fn.body];
+  return true;
+}
+
+/** For each link into `shapeId`, the statement of `fn` that answers
+ * `answer(composed)` when `record` is a copy linked through it, with the
+ * composed record in a hidden local. Empty when no link targets the type. */
+export function linkedCopyBranches(
+  lowerer: Lowerer,
+  fn: IrFunction,
+  record: IrExpr,
+  shapeId: string,
+  answer: (composed: IrExpr & { kind: "varRef" }) => IrStmt[],
+): IrStmt[] {
+  const loc = fn.loc;
+  const branches: IrStmt[] = [];
+  for (const link of recordLinksInto(lowerer, shapeId)) {
     const fromT: IrType & { kind: "record" } = { kind: "record", shapeId: link.from };
-    const local = `linked.${link.pair}`;
+    // A chain of links can reach a pair again inside another branch.
+    let local = `linked.${link.pair}`;
+    if (fn.locals.some((l) => l.id === local)) local = `${local}.${fn.locals.length}`;
     fn.locals.push({ id: local, name: "linked", type: fromT, mutable: false });
     const composed = varRef(local, fromT, loc) as IrExpr & { kind: "varRef" };
-    prefix.push({
+    branches.push({
       kind: "if",
-      cond: recordLinkTest(r, link, loc),
+      cond: recordLinkTest(record, link, loc),
       then: [
-        { kind: "varDecl", localId: local, init: composedRecord(r, link, loc), loc },
+        { kind: "varDecl", localId: local, init: composedRecord(record, link, loc), loc },
         ...answer(composed),
       ],
       else_: null,
       loc,
     });
   }
-  fn.body = [...prefix, ...fn.body];
-  return true;
+  return branches;
 }
 
 /** Completes the record links after lowering. Links whose copies no
@@ -244,7 +260,7 @@ export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): 
     }
     if (
       answerLinkedCopies(lowerer, helper.fn, helper.shapeId, (composed) =>
-        linkedAnswer(lowerer, helper, composed, helper.fn.loc),
+        linkedAnswer(lowerer, helper, composed, sourced, helper.fn.loc),
       )
     )
       answering.add(helper.fn.name);
@@ -419,6 +435,20 @@ function addComposer(lowerer: Lowerer, link: IrRecordLink, sourced: ReadonlySet<
     const read: IrExpr = { kind: "recordGet", obj, shapeId, field: name, type: field.type, loc };
     return { name, value: lowerer.presenceKeepingCopy(obj, shapeId, name, read, loc) };
   });
+  // A source type written in several key orders records each value's order
+  // in a hidden field: the composed record enumerates in the source's.
+  if (sourceShape.fields.some((f) => f.name === KEY_ORDER_FIELD))
+    fields.push({
+      name: KEY_ORDER_FIELD,
+      value: {
+        kind: "recordGet",
+        obj: source,
+        shapeId: link.from,
+        field: KEY_ORDER_FIELD,
+        type: F64,
+        loc,
+      },
+    });
   const body: IrStmt[] = [
     {
       kind: "varDecl",
@@ -549,15 +579,23 @@ function keptSourceTypes(lowerer: Lowerer, t: IrType, out: Set<string>, seen: Se
   }
 }
 
-/** The helper's answer for the record `composed` of a link's source type. */
+/** The helper's answer for the record `composed` of a link's source type.
+ * `sourced` holds the record types that can keep a checked source. */
 function linkedAnswer(
   lowerer: Lowerer,
   helper: LinkedHelper,
   composed: IrExpr & { kind: "varRef" },
+  sourced: ReadonlySet<string>,
   loc: SrcLoc,
 ): IrStmt[] {
   const source = (composed.type as IrType & { kind: "record" }).shapeId;
   const shape = lowerer.shapes.get(source)!;
+  // A source type whose values can carry other properties (a copy linked
+  // again, or a kept checked source) converts through its own helper when
+  // it declares no method of its own for the conversion, so the method
+  // those properties hold runs.
+  const carries =
+    sourced.has(source) || [...lowerer.recordLinks.values()].some((l) => l.to === source);
   const k = varRef("k.0", STRING, loc);
   switch (helper.kind) {
     case "keys":
@@ -591,6 +629,8 @@ function linkedAnswer(
         },
       ];
     case "string":
+      if (carries && !shape.fields.some((f) => f.name === "toString"))
+        return [{ kind: "return", value: sourceConversion(lowerer, "string", composed, loc), loc }];
       return [{ kind: "return", value: recordToString(lowerer, helper, composed, loc), loc }];
     case "custom":
       throw new InternalCompilerError(
@@ -613,7 +653,15 @@ function linkedAnswer(
     case "primitive": {
       const valueOf = shape.fields.find((f) => f.name === "valueOf");
       if (valueOf === undefined || valueOf.type.kind !== "func")
-        return [{ kind: "return", value: recordToString(lowerer, helper, composed, loc), loc }];
+        return [
+          {
+            kind: "return",
+            value: carries
+              ? sourceConversion(lowerer, "primitive", composed, loc)
+              : recordToString(lowerer, helper, composed, loc),
+            loc,
+          },
+        ];
       // ToPrimitive with the default hint calls an own valueOf first.
       const own: IrExpr = {
         kind: "recordGet",
@@ -642,6 +690,40 @@ function linkedAnswer(
       return [{ kind: "return", value: recordToString(lowerer, helper, composed, loc), loc }];
     }
   }
+}
+
+/** `%rec.<hint>.<n>(r)` over the source type of `composed`: ToString (or
+ * ToPrimitive with the default hint) as the record's other properties
+ * answer, for a copy linked again or a kept checked source, else as
+ * recordToString does. finalizeRecordLinks adds the answers, and the
+ * helper keeps its own conversion when none applies. */
+function sourceConversion(
+  lowerer: Lowerer,
+  hint: "string" | "primitive",
+  composed: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const recordT = composed.type as IrType & { kind: "record" };
+  const key = `rec.${hint}.source:${recordT.shapeId}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    name = keyedHelperName(lowerer, `%rec.${hint}`, key);
+    lowerer.valueHelpers.set(key, name);
+    const fn: IrFunction = {
+      name,
+      params: [{ localId: "r.0", name: "r", type: recordT }],
+      returnType: STRING,
+      locals: [{ id: "r.0", name: "r", type: recordT, mutable: false }],
+      body: [],
+      loc,
+    };
+    const helper: LinkedHelper = { fn, shapeId: recordT.shapeId, kind: hint };
+    const r = varRef("r.0", recordT, loc);
+    fn.body = [{ kind: "return", value: recordToString(lowerer, helper, r, loc), loc }];
+    lowerer.liftedFns.push(fn);
+    registerLinkedHelper(lowerer, fn, recordT.shapeId, hint);
+  }
+  return { kind: "call", callee: name, args: [composed], type: STRING, loc };
 }
 
 /** ToString of the record `composed`: its own toString when it holds a

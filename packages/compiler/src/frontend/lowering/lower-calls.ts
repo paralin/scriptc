@@ -191,8 +191,13 @@ import {
   lowerProcStreamMethodCall,
   lowerProcessBuiltinModuleNamespace,
 } from "./builtins/process.js";
-import { recordMayKeepSource, throughRecordSource } from "./record-sources.js";
-import { answerLinkedCopies, recordStringCall, registerLinkedHelper } from "./record-links.js";
+import { recordMayKeepSource, recordSourceTest, throughRecordSource } from "./record-sources.js";
+import {
+  answerLinkedCopies,
+  linkedCopyBranches,
+  recordStringCall,
+  registerLinkedHelper,
+} from "./record-links.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
@@ -9669,10 +9674,28 @@ function lowerObjectStaticCall(
     // checked view's values, checked into the result (which throws).
     registerLinkedHelper(lowerer, fn, argIr.shapeId, "custom");
     lowerer.linkedHelperFinalizers.push(() => {
-      answerLinkedCopies(lowerer, fn, argIr.shapeId, (composed) => {
-        const sourceShape = lowerer.shapes.get(
-          (composed.type as IrType & { kind: "record" }).shapeId,
-        )!;
+      // The answer for the composed record of a link, which can itself be
+      // a linked copy or keep a checked source: their properties come first.
+      const answer = (composed: IrExpr & { kind: "varRef" }): IrStmt[] => {
+        const composedT = composed.type as IrType & { kind: "record" };
+        const sourceShape = lowerer.shapes.get(composedT.shapeId)!;
+        const view: IrExpr = { kind: "dynFrom", value: composed, liveRef: true, type: DYN, loc };
+        const viewAnswer: IrStmt = {
+          kind: "return",
+          value: {
+            kind: "dynCheck",
+            value: {
+              kind: "libCall",
+              fn: member === "values" ? "dyn.objValues" : "dyn.objEntries",
+              args: [view],
+              type: DYN,
+              loc,
+            },
+            type: resultT,
+            loc,
+          },
+          loc,
+        };
         let fits = true;
         const walk = fieldWalk(composed, sourceShape, linkedOut(fn, resultT), () => {
           fits = false;
@@ -9682,27 +9705,22 @@ function lowerObjectStaticCall(
             loc,
           };
         });
-        if (fits) return walk;
-        const view: IrExpr = { kind: "dynFrom", value: composed, liveRef: true, type: DYN, loc };
+        const further = linkedCopyBranches(lowerer, fn, composed, composedT.shapeId, answer);
+        if (!fits) return [...further, viewAnswer];
+        if (!recordMayKeepSource(lowerer, composedT)) return [...further, ...walk];
         return [
+          ...further,
           {
-            kind: "return",
-            value: {
-              kind: "dynCheck",
-              value: {
-                kind: "libCall",
-                fn: member === "values" ? "dyn.objValues" : "dyn.objEntries",
-                args: [view],
-                type: DYN,
-                loc,
-              },
-              type: resultT,
-              loc,
-            },
+            kind: "if",
+            cond: recordSourceTest(composed, loc),
+            then: [viewAnswer],
+            else_: null,
             loc,
           },
+          ...walk,
         ];
-      });
+      };
+      answerLinkedCopies(lowerer, fn, argIr.shapeId, answer);
     });
   }
   const callee = helper;
