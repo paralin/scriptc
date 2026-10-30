@@ -28,6 +28,8 @@ export function withLibraryRuntimeFlavors(matrix) {
     // whose program projects a record calls it, so the library flavors
     // carry the same optional unit the executable flavors compile.
     "scr_record_source_get.c",
+    // Checked casts of untyped values to classes adopt them (dyn.adoptShared).
+    "scr_decl_adopt.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(
