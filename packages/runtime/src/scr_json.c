@@ -5824,6 +5824,7 @@ bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
 SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) = NULL;
 SCR_TL ScrDyn *(*scr_dyn_builtin_static_fn)(const ScrDyn *fn, const char *key, size_t key_len,
                                             bool descriptor) = NULL;
+SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table) = NULL;
 ScrDyn *(*scr_bytes_buffer_constructor_fn)(void) = NULL;
 
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
@@ -7526,7 +7527,9 @@ static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
       entry->configurable = false;
     }
   }
-  return (ScrDyn *)scr_box_get_ref(owner->props);
+  ScrDyn *table = (ScrDyn *)scr_box_get_ref(owner->props);
+  if (scr_dyn_builtin_statics_own_fn) scr_dyn_builtin_statics_own_fn(function, table);
+  return table;
 }
 
 void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype) {

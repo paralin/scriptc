@@ -64,3 +64,28 @@ console.log(typeof [].constructor.isArray, typeof JSON.parse("[]").constructor.o
 const replaced = constructorNamed("Map");
 replaced.groupBy = "own";
 console.log(replaced.groupBy, typeof constructorNamed("Map").groupBy);
+
+// Assignments and deletions treat the static members as own properties with
+// Node's attributes: a constant is read-only, an assigned method keeps the
+// member non-enumerable, and a deleted member stays deleted.
+const numberCtor = constructorNamed("Number");
+numberCtor.EPSILON = 1;
+console.log(numberCtor.EPSILON === Number.EPSILON);
+function strictWrite() {
+  "use strict";
+  try {
+    numberCtor.MAX_SAFE_INTEGER = 1;
+    return "written";
+  } catch (error) {
+    return error.name;
+  }
+}
+console.log(strictWrite(), numberCtor.MAX_SAFE_INTEGER);
+const dateCtor = constructorNamed("Date");
+const originalParse = dateCtor.parse;
+dateCtor.parse = function parse() {
+  return 0;
+};
+console.log(Object.keys(dateCtor), dateCtor.propertyIsEnumerable("parse"), dateCtor.parse === originalParse);
+delete dateCtor.UTC;
+console.log("UTC" in dateCtor, typeof dateCtor.UTC);

@@ -3,10 +3,11 @@
  * function, `o.constructor.keys`). The runtime answers Node's own static
  * members of the builtin constructor values (scr_builtin_values.c): the
  * numeric constants, and functions with Node's name and length that throw
- * SC1090 when called. A program that holds builtin constructor values
- * installs a lookup (`%builtin.staticValue`) answering the members it has
- * function values for with the values their static spellings read, so
- * `globalThis.Object.keys === Object.keys`. */
+ * SC1090 when called. Once a constructor has a property table, they are own
+ * properties of it with Node's attributes. A program that holds builtin
+ * constructor values installs a lookup (`%builtin.staticValue`) answering
+ * the members it has function values for with the values their static
+ * spellings read, so `globalThis.Object.keys === Object.keys`. */
 import {
   BOOL,
   DYN,
@@ -74,7 +75,7 @@ function staticValueMembers(owner: string): Readonly<Record<string, number>> {
 
 /** The compiled closures the primitive constructors read as (lower-exprs.ts
  * primitiveCtorClosure). The runtime does not intern them, so the lookup
- * answers all of their static members. */
+ * names their constructor when the runtime asks for the key "". */
 const PRIMITIVE_CONSTRUCTORS: ReadonlyMap<string, string> = new Map([
   ["%builtin.String", "String"],
   ["%builtin.String.dyn", "String"],
@@ -252,6 +253,24 @@ export function installBuiltinStatics(lowerer: Lowerer, functions: IrFunction[])
     });
   }
   if (values.size === 0 && !readsConstructor) return;
+  // A `constructor` member of an untyped value can be one of the
+  // constructors the runtime answers it with, whose static members then
+  // need their function values too (`JSON.parse(text).constructor.keys`).
+  if (readsConstructor)
+    for (const owner of ["Object", "Array", "Date", "Error"]) {
+      const value = constructorValueOf(
+        owner === "Array"
+          ? { kind: "libCall", fn: "dyn.arrayConstructor", args: [], type: DYN, loc: entry.loc }
+          : {
+              kind: "libCall",
+              fn: "dyn.globalConstructor",
+              args: [{ kind: "strLit", value: owner, type: STRING, loc: entry.loc }],
+              type: DYN,
+              loc: entry.loc,
+            },
+      );
+      if (value !== null && !values.has(value.key)) values.set(value.key, value);
+    }
   const loc: SrcLoc = { ...entry.loc, end: entry.loc.start };
   const lifted = lowerer.liftedFns.length;
   if (!lowerer.liftedFns.some((fn) => fn.name === LOOKUP_FN)) {
@@ -259,7 +278,21 @@ export function installBuiltinStatics(lowerer: Lowerer, functions: IrFunction[])
     const key: IrExpr = { kind: "varRef", localId: "key.0", type: STRING, loc };
     const body: IrStmt[] = [];
     for (const constructor of values.values()) {
-      const members: IrStmt[] = [];
+      // The key "" asks which constructor a value the runtime does not
+      // intern is (scr_bv_owner_of).
+      const members: IrStmt[] = constructor.interned
+        ? []
+        : [
+            ifKey(
+              key,
+              "",
+              lowerer.coerceToExpected(
+                { kind: "strLit", value: constructor.owner, type: STRING, loc },
+                DYN,
+              ),
+              loc,
+            ),
+          ];
       const lengths = staticValueMembers(constructor.owner);
       for (const member of Object.keys(lengths)) {
         if (!names.has(member)) continue;
@@ -270,26 +303,13 @@ export function installBuiltinStatics(lowerer: Lowerer, functions: IrFunction[])
         if (found === null) continue;
         const boxed = lowerer.coerceToExpected(found, DYN);
         const named: IrExpr =
-          boxed.kind === "dynFrom"
+          boxed.kind === "dynFrom" && boxed.value.type.kind === "func"
             ? { ...boxed, fnName: member, fnLength: lengths[member] ?? 0 }
             : boxed;
         members.push(ifKey(key, member, named, loc));
       }
-      // The runtime answers the other members of the constructors it
-      // interns; the primitive constructors' come from its table here.
-      members.push({
-        kind: "return",
-        value: constructor.interned
-          ? nullValue(lowerer, loc)
-          : {
-              kind: "libCall",
-              fn: "dyn.builtinStatic",
-              args: [{ kind: "strLit", value: constructor.owner, type: STRING, loc }, key],
-              type: DYN,
-              loc,
-            },
-        loc,
-      });
+      // The runtime answers the other members.
+      members.push({ kind: "return", value: nullValue(lowerer, loc), loc });
       body.push({
         kind: "if",
         cond: { kind: "dynScalarEq", left: value, right: constructor.read(loc), type: BOOL, loc },
