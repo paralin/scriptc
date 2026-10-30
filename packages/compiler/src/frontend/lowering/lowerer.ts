@@ -540,6 +540,7 @@ import {
   inferTypeParamBindings,
   lowerGenericInstance,
   genericLocalClassBinding,
+  checkGenericIdentityPins,
 } from "./generic-functions.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import { isMessageListenerCall } from "./expressions/message-listeners.js";
@@ -595,7 +596,12 @@ import {
 } from "./builtins/filesystem.js";
 import { lowerSpawnSyncCall, lowerSpawnCall, lowerExecFileCall } from "./builtins/child-process.js";
 import { lowerExecSyncCall } from "./builtins/child-process-sync.js";
-import { isProcessEnv, envValueType, lowerProcessEnvGet } from "./builtins/environment.js";
+import {
+  isProcessEnv,
+  envValueType,
+  lowerProcessEnvGet,
+  refuseHeldEnvWrite,
+} from "./builtins/environment.js";
 import { lowerJsonMethodCall, lowerJsonProperty } from "./builtins/json.js";
 import { lowerCryptoComposedCall, lowerCryptoModuleCall } from "./builtins/crypto.js";
 import { lowerUrlMethodCall, lowerSearchParamsMethodCall } from "./builtins/url.js";
@@ -2594,6 +2600,17 @@ export class Lowerer {
    * type parameters are bound to `unknown`, so lambdaSignature admits
    * them. */
   readonly erasingLambdas = new Set<ts.Node>();
+  /** Identity comparisons of a generic declaration met while lowering
+   * (directly against the declaration, or through a dynamic value): exact
+   * only while the program holds that declaration as one function object
+   * (checkGenericIdentityPins). */
+  readonly genericIdentityPins: { info: GenericFnInfo; node: ts.Node }[] = [];
+  /** Identity comparisons whose operands are dynamic values, recorded while
+   * lowering and resolved by checkGenericIdentityPins only when some
+   * generic declaration is held at more than one signature. */
+  readonly dynIdentityComparisons: { node: ts.Node; left: ts.Node; right: ts.Node }[] = [];
+  /** The identity comparison check reports once, after all lowering. */
+  genericIdentityCheckDone = false;
   /** Function expressions lowered against a fixed target signature with a
    * tuple-typed `arguments` (typed-arguments.ts). */
   readonly typedArgumentsLambdas = new Set<ts.Node>();
@@ -4324,6 +4341,8 @@ export class Lowerer {
       checkedTable("genericFunctionDemandOwner", () => this.genericFunctionDemandOwner.size),
       checkedTable("genericClassDemandOwner", () => this.genericClassDemandOwner.size),
       checkedTable("erasingLambdas", () => this.erasingLambdas.size),
+      checkedTable("genericIdentityPins", () => this.genericIdentityPins.length),
+      checkedTable("dynIdentityComparisons", () => this.dynIdentityComparisons.length),
       checkedTable("typedArgumentsLambdas", () => this.typedArgumentsLambdas.size),
       checkedTable("tupleAliasSymbols", () => this.tupleAliasSymbols.size),
       checkedTable("nullishFuncResults", () => this.nullishFuncResults.size),
@@ -4759,6 +4778,9 @@ export class Lowerer {
       fixed("errorAccessorReflection", () => this.errorAccessorReflection),
       fixed("subclassLinks", () => this.subclassLinks),
       fixed("errorPathCopies", () => this.errorPathCopies),
+      // A latch of the end-of-lowering audit (checkGenericIdentityPins): a
+      // unit never touches it.
+      fixed("genericIdentityCheckDone", () => this.genericIdentityCheckDone),
       fixed("errorMethodDispatchRevision", () => this.errorMethodDispatchRevision),
       fixed("errorPropertyDispatchRevision", () => this.errorPropertyDispatchRevision),
       fixed("childAdditions", () => this.childAdditions),
@@ -9777,6 +9799,9 @@ export class Lowerer {
         if (this.alreadyFlushed.has(symbol)) continue;
         for (const d of [...diags]) this.pushDiag(d);
       }
+      // Coverage visits more bodies; more value instances can only add
+      // refusals to the identity comparison check.
+      checkGenericIdentityPins(this);
       return {
         module: null,
         diagnostics: this.diags,
@@ -9793,6 +9818,10 @@ export class Lowerer {
   /** Final retention, pruning, and module assembly shared by ordinary emit
    * and the retained reachability worklist. */
   finishModule(functions: IrFunction[]): LowerResult {
+    // Every instance of every generic value is known now (the
+    // monomorphization worklists drained): an identity comparison against
+    // one is exact only if the declaration is held at a single signature.
+    checkGenericIdentityPins(this);
     finalizeRecordLinks(this, functions);
     boxBuiltinValuesChecked(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
@@ -16947,6 +16976,7 @@ export class Lowerer {
   }
 
   fieldSetStmt(target: FieldTarget, value: IrExpr, loc: SrcLoc, blame: ts.Node): IrStmt {
+    refuseHeldEnvWrite(this, blame);
     return markSloppyRecordWrites(this, fieldSetStmt(this, target, value, loc, blame), blame);
   }
 
