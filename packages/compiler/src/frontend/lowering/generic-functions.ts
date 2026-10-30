@@ -1883,22 +1883,28 @@ function pinnedInstanceBehind(
     }
     const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];
     if (decl === undefined) return null;
+    // A binding the program later rewrites may hold another function at
+    // the comparison: resolve it, and alias it through its initializer,
+    // only where it is never written.
+    if (!holdsItsInitializer(lowerer, decl)) return null;
     const recorded = lowerer.pinnedValueInstances.get(decl);
-    if (recorded !== undefined) {
-      // A binding the program later rewrites may hold another function at
-      // the comparison: resolve it only where it is never written.
-      if (ts.isVariableDeclaration(decl)) {
-        if (!ts.isIdentifier(decl.name)) return null;
-        const binding = lowerer.checker.getSymbolAtLocation(decl.name);
-        if (binding === undefined || !bindingNeverReassigned(lowerer, binding, decl)) return null;
-      }
-      return recorded;
-    }
-    if (!ts.isVariableDeclaration(decl) && !ts.isPropertyDeclaration(decl) && !ts.isParameter(decl))
-      return null;
-    current = decl.initializer;
+    if (recorded !== undefined) return recorded;
+    current = (decl as ts.VariableDeclaration | ts.PropertyDeclaration | ts.ParameterDeclaration)
+      .initializer;
   }
   return null;
+}
+
+/** Whether `decl` is a variable or property that keeps the value it starts
+ * with: a variable with an identifier name that nothing writes, or a
+ * readonly property. A parameter's default is not its value: a call can pass
+ * any function for it. */
+function holdsItsInitializer(lowerer: Lowerer, decl: ts.Node): boolean {
+  if (ts.isPropertyDeclaration(decl))
+    return (ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Readonly) !== 0;
+  if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return false;
+  const binding = lowerer.checker.getSymbolAtLocation(decl.name);
+  return binding !== undefined && bindingNeverReassigned(lowerer, binding, decl);
 }
 
 /** The generic declaration whose value instance an expression names, when

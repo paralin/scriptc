@@ -11,3 +11,10 @@ const i = ident<number>;
 const j = ident<any>;
 console.log(num === anyPin);
 console.log(i === j);
+// An alias nothing rewrites still names the pin it starts as.
+const alias = anyPin;
+console.log(num === alias);
+class Pins {
+  readonly held: (x: any) => any = anyPin;
+}
+console.log(num === new Pins().held);
