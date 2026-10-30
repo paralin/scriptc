@@ -3,17 +3,20 @@
  *
  * Node parity notes (SEMANTICS.md has the user-facing story):
  * - The command PATH-searches like Node's (posix_spawnp; a command
- *   containing '/' spawns directly). No shell, ever.
+ *   containing '/' spawns directly). `shell` (always with an empty args
+ *   list — see DEP0190 below) runs the command line through /bin/sh -c
+ *   instead.
  * - stdin is /dev/null (Node's spawnSync default reads nothing without
- *   `input`); stdout/stderr are captured to strings, utf8 assumed — the
- *   compiler fences every other encoding.
+ *   `input`; `input` pipes that string instead); stdout/stderr are
+ *   captured to strings, utf8 assumed — the compiler fences every other
+ *   encoding.
  * - `status` is the exit code; a child killed by a signal has NO status
  *   (has_status = false → the compiler's `number | null` union takes the
  *   null arm), exactly Node's status: null there.
- * - Spawn FAILURE (nonexistent binary, EACCES) never throws: Node reports
- *   it through the result's `error` property, which this surface does not
- *   carry — status is null and both outputs are "" (Node types them null;
- *   divergence documented).
+ * - Spawn FAILURE (nonexistent binary, EACCES) never throws, and a
+ *   timeout kill never throws either: the result carries Node's `error`
+ *   (code ENOENT/ETIMEDOUT, ETIMEDOUT with the killSignal name as
+ *   `signal`), the shape scr_child_error_sync_fields stamps.
  * - No zombies: every successfully spawned child is waitpid()ed before
  *   this function returns, unconditionally.
  */
@@ -2997,10 +3000,33 @@ void scr_children_poll(void) {
 static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                             int killsig, int in_mode, int out_mode,
                                             int err_mode, ScrArr *env_pairs,
-                                            ScrStr *cwd, ScrStr *input, bool has_input) {
+                                            ScrStr *cwd, ScrStr *input, bool has_input,
+                                            bool shell) {
   ScrWinSyncRes w;
-  scr_win_run_sync(cmd, args, has_input ? input : NULL, in_mode, out_mode, err_mode,
+  /* `shell`: the command runs through cmd.exe /d /s /c, Node's Windows
+   * shape. The compiler emits the form with an EMPTY args list only (a
+   * non-empty one is Node's DEP0190 warning, which a native build cannot
+   * report), so the command string IS the command line. */
+  ScrStr *run_cmd = cmd;
+  ScrArr *run_args = args;
+  ScrArr *shell_args = NULL;
+  if (shell) {
+    const char *comspec = getenv("COMSPEC");
+    if (comspec == NULL || *comspec == '\0') comspec = "cmd.exe";
+    run_cmd = scr_str_new(comspec, strlen(comspec));
+    shell_args = scr_arr_new(SCR_ELEM_STR, 4);
+    scr_arr_push_ref(shell_args, scr_str_new("/d", 2));
+    scr_arr_push_ref(shell_args, scr_str_new("/s", 2));
+    scr_arr_push_ref(shell_args, scr_str_new("/c", 2));
+    scr_arr_push_ref(shell_args, scr_str_retain(cmd));
+    run_args = shell_args;
+  }
+  scr_win_run_sync(run_cmd, run_args, has_input ? input : NULL, in_mode, out_mode, err_mode,
                    cwd != NULL && cwd->len > 0 ? cwd : NULL, env_pairs, timeout_ms, &w);
+  if (shell_args != NULL) {
+    scr_str_release(run_cmd);
+    scr_arr_release(shell_args);
+  }
   if (w.spawn_errname != NULL) {
     free(w.out.data);
     free(w.err.data);
@@ -3027,7 +3053,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
 ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                      ScrStr *killsignal, double in_mode, double out_mode,
                                      double err_mode, ScrStr *cwd, ScrStr *input,
-                                     bool has_input, ScrArr *env_pairs) {
+                                     bool has_input, bool shell, ScrArr *env_pairs) {
   int killsig = SIGTERM;
   if (killsignal->len > 0) {
     int resolved = scr_signal_from_name(killsignal);
@@ -3035,15 +3061,15 @@ ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms
   }
   return scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
                                  (int)out_mode, (int)err_mode, env_pairs, cwd, input,
-                                 has_input);
+                                 has_input, shell);
 }
 
 ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode, double out_mode,
                                  double err_mode, ScrStr *cwd, ScrStr *input,
-                                 bool has_input) {
+                                 bool has_input, bool shell) {
   return scr_spawn_sync_ext_env(cmd, args, timeout_ms, killsignal, in_mode, out_mode,
-                                err_mode, cwd, input, has_input, NULL);
+                                err_mode, cwd, input, has_input, shell, NULL);
 }
 
 /* exec/execFile (the callback slice) with the `cwd` option. */
@@ -6029,7 +6055,8 @@ void scr_children_poll(void) {
 static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                             int killsig, int in_mode, int out_mode,
                                             int err_mode, ScrArr *env_pairs,
-                                            ScrStr *cwd, ScrStr *input, bool has_input) {
+                                            ScrStr *cwd, ScrStr *input, bool has_input,
+                                            bool shell) {
   bool use_cwd = cwd != NULL && cwd->len > 0;
   if (out_mode == 2 || err_mode == 2) {
     /* Inherited output fds: flush the parent's buffers first so earlier
@@ -6073,9 +6100,25 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
 #endif
 
   char **argv = scr_child_argv(cmd, args);
+  /* `shell`: the command line through /bin/sh -c (the async spawn's exact
+   * shape), so the command's quoting and operators apply. The form is
+   * emitted with an EMPTY args list only (Node's DEP0190 warns otherwise,
+   * and a native build has no warning channel), so the command string IS
+   * the command line. */
+  const char *file = cmd->data;
+  if (shell) {
+    free(argv);
+    argv = malloc(4 * sizeof(char *));
+    if (!argv) scr_child_oom();
+    argv[0] = (char *)"/bin/sh";
+    argv[1] = (char *)"-c";
+    argv[2] = cmd->data;
+    argv[3] = NULL;
+    file = "/bin/sh";
+  }
   char **envp = env_pairs != NULL ? scr_exec_envp(env_pairs) : NULL;
   pid_t pid = -1;
-  int spawn_err = scr_spawn_command(&pid, cmd->data, &fa, NULL, argv, envp,
+  int spawn_err = scr_spawn_command(&pid, file, &fa, NULL, argv, envp,
                                     use_cwd ? cwd->data : NULL);
   posix_spawn_file_actions_destroy(&fa);
   free(argv);
@@ -6209,7 +6252,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
 ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                      ScrStr *killsignal, double in_mode, double out_mode,
                                      double err_mode, ScrStr *cwd, ScrStr *input,
-                                     bool has_input, ScrArr *env_pairs) {
+                                     bool has_input, bool shell, ScrArr *env_pairs) {
   int killsig = SIGTERM;
   if (killsignal->len > 0) {
     int resolved = scr_signal_from_name(killsignal);
@@ -6217,15 +6260,15 @@ ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms
   }
   return scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
                                  (int)out_mode, (int)err_mode, env_pairs, cwd, input,
-                                 has_input);
+                                 has_input, shell);
 }
 
 ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode, double out_mode,
                                  double err_mode, ScrStr *cwd, ScrStr *input,
-                                 bool has_input) {
+                                 bool has_input, bool shell) {
   return scr_spawn_sync_ext_env(cmd, args, timeout_ms, killsignal, in_mode, out_mode,
-                                err_mode, cwd, input, has_input, NULL);
+                                err_mode, cwd, input, has_input, shell, NULL);
 }
 
 /* exec/execFile (the callback slice) with the `cwd` option: scr_exec_file's

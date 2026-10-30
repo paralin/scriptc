@@ -134,8 +134,8 @@ export interface CcOptions {
   /** ChildProcess listener removal and signalCode: compiles
    * scr_child_lifecycle.c. */
   childLifecycle?: boolean;
-  /** The spawnSync and exec/execFile-callback `cwd`/`input` entries: the
-   * SCR_CHILD_CP_OPTIONS build of scr_child.c. */
+  /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
+   * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;

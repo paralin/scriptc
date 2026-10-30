@@ -1596,16 +1596,19 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), F64, STRING, STRING],
       result: SPAWNRES_T,
     },
-    /** spawnSync with the `cwd` and `input` options (the
+    /** spawnSync with the `cwd`, `input`, and `shell` options (the
      * SCR_CHILD_CP_OPTIONS build of scr_child.c): the cp.spawnSyncOpts
-     * contract plus the child's working directory ("" = inherit) and
-     * stdin input (has_input false leaves fd 0 to the stdio mode — an
-     * absent `input` option; "" pipes an empty stdin), exactly Node's
-     * reading of the member. Args (cmd, argv, timeout, killSignal,
-     * inMode, outMode, errMode, cwd, input, hasInput). Never throws, like
-     * every spawnSync form. */
+     * contract plus the child's working directory ("" = inherit), stdin
+     * input (has_input false leaves fd 0 to the stdio mode — an absent
+     * `input` option; "" pipes an empty stdin), and the shell form
+     * (the complete command line through /bin/sh -c — the compiler emits
+     * it with an empty args list only, since Node warns DEP0190 for
+     * separate shell arguments), exactly Node's reading of the members.
+     * Args (cmd, argv, timeout, killSignal, inMode, outMode, errMode,
+     * cwd, input, hasInput, shell). Never throws, like every spawnSync
+     * form. */
     "cp.spawnSyncExt": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING, STRING, BOOL],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING, STRING, BOOL, BOOL],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncExt with the `env` option: the trailing [k,v,...] pairs
@@ -1621,6 +1624,7 @@ function buildLibFnSignatures() {
         F64,
         STRING,
         STRING,
+        BOOL,
         BOOL,
         arrayOf(STRING),
       ],

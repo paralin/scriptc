@@ -28,21 +28,25 @@ ScrSpawnRes *scr_spawn_sync_opts(ScrStr *cmd, ScrArr *args, double timeout_ms,
 ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                 ScrStr *killsignal, double in_mode, double out_mode,
                                 double err_mode, ScrArr *env_pairs);
-/* The cwd/input forms (cp.spawnSyncExt / cp.spawnSyncExtEnv): the options
- * entry with the child started in `cwd` (NULL or "" = the parent's
- * directory) and `input` written to its stdin, with has_input false
- * leaving fd 0 to the stdio mode ("input: undefined" is an ABSENT option,
- * "" pipes an empty stdin). Built only into programs that name these
- * entries (SCR_CHILD_CP_OPTIONS: the compiler's childOptionExt feature),
- * so the default object stays byte identical. */
+/* The cwd/input/shell forms (cp.spawnSyncExt / cp.spawnSyncExtEnv): the
+ * options entry with the child started in `cwd` (NULL or "" = the
+ * parent's directory), `input` written to its stdin (has_input false
+ * leaves fd 0 to the stdio mode — "input: undefined" is an ABSENT option,
+ * "" pipes an empty stdin), and `shell` running the command line through
+ * /bin/sh -c (cmd.exe /d /s /c on Windows) — the compiler emits it with
+ * an empty args list only, because Node warns DEP0190 for unescaped
+ * separate shell arguments.
+ * Built only into programs that name these entries
+ * (SCR_CHILD_CP_OPTIONS: the compiler's childOptionExt feature), so the
+ * default object stays byte identical. */
 ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode, double out_mode,
                                  double err_mode, ScrStr *cwd, ScrStr *input,
-                                 bool has_input);
+                                 bool has_input, bool shell);
 ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                      ScrStr *killsignal, double in_mode, double out_mode,
                                      double err_mode, ScrStr *cwd, ScrStr *input,
-                                     bool has_input, ScrArr *env_pairs);
+                                     bool has_input, bool shell, ScrArr *env_pairs);
 /* The runtime-string stdio entry: the compiler proved the value is
  * "pipe" | "ignore" | "inherit" by type; the mode mapping happens here. */
 ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_ms,

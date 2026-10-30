@@ -885,10 +885,10 @@ const RUNTIME_FEATURE_RULES = {
       "child.signalCode",
     ],
   }),
-  /** spawnSync's and the exec/execFile callback form's `cwd`/`input`
-   * entries (SCR_CHILD_CP_OPTIONS): a build of scr_child.c of its own, so
-   * a program that never passes those options keeps the default object,
-   * byte for byte. */
+  /** spawnSync's and the exec/execFile callback form's `cwd`/`input`/
+   * `shell` entries (SCR_CHILD_CP_OPTIONS): a build of scr_child.c of its
+   * own, so a program that never passes those options keeps the default
+   * object, byte for byte. */
   childOptionExt: rule({
     fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
   }),
