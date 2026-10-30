@@ -47,6 +47,7 @@ test("library pack modes preserve pure runtime features and exclude ambient even
         "scr_inspect.c",
         "scr_console_native.c",
         "scr_copying.c",
+        "scr_decl_adopt.c",
       ])
         expect(sources).toContain(source);
       for (const unit of flavor.runtime_units)
