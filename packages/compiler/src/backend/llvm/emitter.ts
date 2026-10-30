@@ -15,6 +15,7 @@ import {
   CYC_HDR,
   FIRST_EMITTED_CYC_KIND,
   inlineAllocSupported,
+  RECORD_KEPT_GATE,
   RECORD_SOURCES_GATE,
   WEAK_KEYS_GATE,
 } from "./alloc.js";
@@ -1677,6 +1678,12 @@ export class LlEmitter {
   readonly arraySearchKinds = new Set<ArraySearchKind>();
   /** Typed-ref recipe constants by type key (lazy receivers). */
   readonly typedRefRecipes = new Map<string, string>();
+
+  /** The module links narrowed record copies to their sources
+   * (IrModule.recordLinks). */
+  hasRecordLinks(): boolean {
+    return (this.mod.recordLinks?.length ?? 0) > 0;
+  }
   /** ReadableStream.from adapters keep typed arrays by reference and box
    * one current element per pull. */
   readonly streamFromArrayAdapters = new Map<string, string>();
@@ -2390,6 +2397,9 @@ export class LlEmitter {
       this.tracedUnions,
     );
     this.shapeHost = {
+      ...((mod.recordLinks?.length ?? 0) > 0
+        ? { recordSourcesGate: RECORD_KEPT_GATE, recordLinks: mod.recordLinks }
+        : {}),
       // Journal hooks only on emitters that can emit ranges (chunk
       // emitters, and emitters whose workers take a journal after the
       // fork), so the host's optional calls cost nothing otherwise.
@@ -2818,7 +2828,10 @@ export class LlEmitter {
     );
     return [
       `${WEAK_KEYS_GATE} = internal constant i1 ${weak}`,
-      `${RECORD_SOURCES_GATE} = internal constant i1 ${this.dyn.keepsRecordSources}`,
+      `${RECORD_SOURCES_GATE} = internal constant i1 ${this.dyn.keepsRecordSources || this.hasRecordLinks()}`,
+      ...(this.hasRecordLinks()
+        ? [`${RECORD_KEPT_GATE} = internal constant i1 ${this.dyn.keepsRecordSources}`]
+        : []),
       ``,
     ];
   }

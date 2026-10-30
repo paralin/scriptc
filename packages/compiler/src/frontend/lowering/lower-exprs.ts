@@ -27,6 +27,9 @@ import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands
 import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
 import type { Lowerer } from "./lowerer.js";
+import { recordMayKeepSource } from "./record-sources.js";
+import { recordStringCall } from "./record-links.js";
+import { nullProtoRecordShape } from "./null-prototype.js";
 import {
   lowerMaybePromiseAwait,
   maybePromiseUnionOf,
@@ -2719,6 +2722,18 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
 /** An operand of `+` with a string: ToString of ToPrimitive with the
  * default hint, which tries a class instance's valueOf before toString. */
 export function concatOperand(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
+  // `+` converts an object with ToPrimitive's default hint, which tries
+  // valueOf before toString: a linked copy or a record with a kept source
+  // adds as its source does (record-links.ts).
+  if (
+    e.type.kind === "record" &&
+    recordMayKeepSource(lowerer, e.type) &&
+    lowerer.shapes
+      .get(e.type.shapeId)
+      ?.fields.every((f) => f.name !== "toString" && f.name !== "valueOf") === true &&
+    nullProtoRecordShape(lowerer, e.type) === null
+  )
+    return recordStringCall(lowerer, e, "primitive", e.loc, "toString");
   return (
     classToStringConversion(lowerer, e, "default", node) ??
     classUnionToString(lowerer, e, "default", node) ??

@@ -63,6 +63,8 @@ import { NARROW_FIRST, sideEffectFreeOptionValue } from "../surfaces.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
+import { recordMayKeepSource } from "../record-sources.js";
+import { recordHasOwnHelper } from "../lower-calls.js";
 
 /** The class value an `instanceof` right-hand side holds. A JavaScript
  * object's property holding a program class (`holder.type`) reads as a
@@ -2084,6 +2086,17 @@ export function lowerInExpression(
       loc,
     };
   }
+  // A key the type does not declare is an own key of a linked copy's
+  // source or of a kept checked source (record-links.ts); the helper call
+  // evaluates the receiver once.
+  if (!inherited && recordMayKeepSource(lowerer, recv.type))
+    return {
+      kind: "call",
+      callee: recordHasOwnHelper(lowerer, recv.type.shapeId, loc),
+      args: [recv, { kind: "strLit", value: key, type: STRING, loc }],
+      type: BOOL,
+      loc,
+    };
   return staticAnswerAfter(recv, inherited, loc);
 }
 

@@ -9,6 +9,8 @@ import {
 } from "../undefined-index.js";
 import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
+import { recordMayKeepSource } from "../record-sources.js";
+import { recordStringCall } from "../record-links.js";
 import {
   BIGINT_T,
   BOOL,
@@ -922,6 +924,10 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
       // valueOf: ToPrimitive throws Node's TypeError.
       const nullProtoT = nullProtoRecordShape(lowerer, e.type);
       if (nullProtoT) return nullProtoToString(lowerer, e, nullProtoT);
+      // A linked copy or a record with a kept source converts as its
+      // source does (record-links.ts).
+      if (recordMayKeepSource(lowerer, e.type))
+        return recordStringCall(lowerer, e, "string", e.loc, "toString");
       return { kind: "toString", operand: e, type: STRING, loc: e.loc };
     }
   }

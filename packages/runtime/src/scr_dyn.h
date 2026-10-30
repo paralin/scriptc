@@ -1406,6 +1406,18 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
 void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
                             const size_t *lens, size_t count);
 bool scr_record_source_has(const void *rec);
+/* A conversion of a native record into a narrower record type links the
+ * copy to its source when the source has properties the copy's type does
+ * not declare (scr_json.c): `source` moves in and is released with the
+ * copy through `release`; `pair` (nonzero) names the conversion's
+ * (source type, copy type) pair. scr_record_link_pair answers a copy's
+ * pair, 0 when it has no link, and scr_record_link_source its source
+ * (borrowed). */
+void scr_record_link(void *copy, void *source, void (*release)(void *), uint32_t pair);
+/* `dst`, a record of `src`'s shape, keeps src's kept source too. */
+void scr_record_source_share(void *dst, const void *src);
+uint32_t scr_record_link_pair(const void *copy);
+void *scr_record_link_source(const void *copy);
 /* A literal that starts with `...src` creates src's keys first, in src's
  * order: when src kept a source, the fresh record `dst` (whose shape's
  * declared names are `names`) keeps one listing the keys it declares in
