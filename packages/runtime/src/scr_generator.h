@@ -98,7 +98,9 @@ bool scr_gen_step(ScrGen *g);
 /* The bind barrier's eager step (fn.generator.bindAtCall): a spawn wrapper
  * runs a generator's parameter prologue inside the call, to the barrier at
  * its end — an invisible suspension, which a fiber body writes as the
- * valueless scr_gen_yield_ref. A synchronous generator reports a bind
+ * valueless scr_gen_yield_ref and scr_gen_bind then clears from OUT, so the
+ * parked generator holds no value in either body form. A synchronous
+ * generator reports a bind
  * failure through the caller's exception cell; an async generator's
  * rejection is moved there too, from async_error, so the call throws
  * exactly as Node's does. scr_gen_bind lives in scr_gen_bind.c, a unit only

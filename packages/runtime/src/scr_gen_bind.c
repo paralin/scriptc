@@ -22,11 +22,30 @@ static void scr_gen_bind_throw(ScrExcCell *dst, ScrExcCell *src) {
   scr_exc_cell_changed();
 }
 
+/* The barrier suspends without a value in the stackless form (coro.suspend
+ * writes no slot), but the fiber form parks the valueless yield, whose slot
+ * is an empty REF. Clear that marker so a bound generator stays parked
+ * exactly like one that has not yielded: otherwise OUT reads as a value, and
+ * the next settlement takes the stale slot for a yielded (or completion)
+ * result — an async generator's await would settle its request with the
+ * marker, and its later completion would read the same slot twice. */
+static void scr_gen_bind_park(ScrGen *g) {
+  if (g->state != SCR_GEN_DONE) {
+    g->out.kind = SCR_EXC_NONE;
+    g->out.payload = NULL;
+    g->out.release_fn = NULL;
+  }
+  /* The hop parked the generator where an await would; a request expects a
+   * yield there. */
+  if (g->is_async && g->state == SCR_GEN_AWAITING) g->state = SCR_GEN_SUSPENDED;
+}
+
 void scr_gen_bind(ScrGen *g) {
   if (!g->is_async || g->state != SCR_GEN_UNSTARTED) {
     /* A synchronous generator reports a bind failure through the caller's
      * cell, and scr_gen_step resets IN as every step does. */
     (void)scr_gen_step(g);
+    scr_gen_bind_park(g);
     return;
   }
   /* An async generator's prologue parks its exception in async_error, which
@@ -37,7 +56,5 @@ void scr_gen_bind(ScrGen *g) {
     scr_gen_bind_throw(scr_exc_current_cell(), &g->async_error);
     return;
   }
-  /* The barrier stored no OUT value, so the hop parked the generator as an
-   * await would; a request expects a yield there. */
-  if (g->state == SCR_GEN_AWAITING) g->state = SCR_GEN_SUSPENDED;
+  scr_gen_bind_park(g);
 }
