@@ -5103,7 +5103,9 @@ function lowerArrayIsArrayCall(
   if (arg.kind === "varRef" || arg.kind === "recordGet" || arg.kind === "fieldGet") return folded;
   // A computed argument (`Array.isArray(make())`, `Array.isArray([1, 2])`)
   // still answers from its static type, so evaluate the argument for its
-  // effects and discard the value.
+  // effects and discard the value. `undefined`/`null` lower to a bare unitLit,
+  // which carries no effect and is not a valid IR expression statement.
+  if (arg.kind === "unitLit") return folded;
   return {
     kind: "seqExpr",
     stmts: [{ kind: "exprStmt", expr: arg, loc }],
