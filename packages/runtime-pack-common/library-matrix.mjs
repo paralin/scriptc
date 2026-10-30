@@ -19,6 +19,8 @@ export function withLibraryRuntimeFlavors(matrix) {
     "scr_bytes_dyn.c",
     "scr_js_value.c",
     "scr_js_object.c",
+    // Checked casts of untyped values to classes adopt them (dyn.adoptShared).
+    "scr_decl_adopt.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(
