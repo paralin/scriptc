@@ -58,7 +58,7 @@ import {
   setActiveNodeIslands,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
-import type { IslandModuleBinding } from "./lower-node-island.js";
+import type { IslandBinding, IslandModuleBinding } from "./lower-node-island.js";
 import { bindingSymbolOfRead, onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
 import {
   needsGeneralNodeStreams,
@@ -249,6 +249,7 @@ import {
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
 import { finalizePrivateBrands } from "./private-brands.js";
+import { finalizeFunctionNames } from "./function-names.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
 export type { WidthLift } from "./width-lift.js";
@@ -594,7 +595,12 @@ import {
 } from "./builtins/filesystem.js";
 import { lowerSpawnSyncCall, lowerSpawnCall, lowerExecFileCall } from "./builtins/child-process.js";
 import { lowerExecSyncCall } from "./builtins/child-process-sync.js";
-import { isProcessEnv, envValueType, lowerProcessEnvGet } from "./builtins/environment.js";
+import {
+  isProcessEnv,
+  envValueType,
+  lowerProcessEnvGet,
+  refuseHeldEnvWrite,
+} from "./builtins/environment.js";
 import { lowerJsonMethodCall, lowerJsonProperty } from "./builtins/json.js";
 import { lowerCryptoComposedCall, lowerCryptoModuleCall } from "./builtins/crypto.js";
 import { lowerUrlMethodCall, lowerSearchParamsMethodCall } from "./builtins/url.js";
@@ -783,6 +789,7 @@ import { lowerRecordFieldCall, lowerObjectMethodCall } from "./lower-calls.js";
 import { fenceCrossBlockNsRef, nsPathPrefix } from "./lower-namespaces.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { partialAssertionFields } from "./partial-assertions.js";
+import { emptyArrayLiteralArm } from "./expressions/array-literals.js";
 import { lowerTernary } from "./lower-exprs.js";
 import {
   maybePromiseReturnStmt,
@@ -2726,6 +2733,9 @@ export class Lowerer {
   requestInitPropMutatedSyms: Set<ts.Symbol> | null = null;
   emitterEventTable: Map<string, EventSig> | null = null;
   emitterComputedPatterns: ComputedEventPattern[] = [];
+  /** Some site registers a listener under an unrestricted computed name
+   * (lower-event-emitter.ts emitterEvents). */
+  emitterAnyNameListener = false;
   /** The EventTarget engine's handleEvent reader was lifted
    * (lower-event-target.ts noteEventListeners). */
   handleEventReader = false;
@@ -3581,6 +3591,9 @@ export class Lowerer {
   readonly neverValued = new Set<IrExpr>();
   readonly chainNarrowedType = new Map<ts.Node, ts.Type>();
   readonly chainHandled = new Set<ts.Node>();
+  /** One arm's narrowed value for a spread source while a distributed
+   * union spread lowers that arm (lowerDistributedUnionSpread). */
+  readonly spreadArmOverrides = new Map<ts.Node, IrExpr>();
   /** for-of-over-matchAll bindings whose `.index` reads the companion-index
    * array: binding SYMBOL → the hidden number[] of match start indices plus
    * the hidden cursor holding THIS iteration's position (registered while
@@ -3700,6 +3713,12 @@ export class Lowerer {
   readonly globalsList: IrGlobal[] = [];
 
   readonly npmInitActions = new Map<ts.SourceFile, Map<ts.Statement, IrStmt[]>>();
+  /** Per-file %init statements of static island imports and re-exports,
+   * by the import or export statement that loads the island module: the
+   * importer's %init header runs them in that statement's place among its
+   * dependencies' %init calls, so the island module evaluates in source
+   * order with the native dependencies around it. */
+  readonly islandImportActions = new Map<ts.SourceFile, Map<ts.Statement, IrStmt[]>>();
   /** Per-file %init PRELUDE statements for JSON imports: bakeable DATA
    * assignments with no observable evaluation order of their own —
    * prepended by lowerFileInit so the bindings are live before any
@@ -3796,6 +3815,9 @@ export class Lowerer {
   readonly nodeIslandLoads: { literal: IrExpr & { kind: "strLit" }; path: string }[] = [];
   /** Island handle bindings by symbol (lower-node-island.ts). */
   readonly islandHandleBindings = new Map<ts.Symbol, boolean>();
+  /** Names a native module re-exports from an island package, by the
+   * symbol an alias chain reaches (lower-node-island.ts). */
+  readonly islandReexports = new Map<ts.Symbol, IslandBinding>();
   /** `instanceof` expressions the island lowering already handles. */
   readonly islandInstanceofHandled = new Set<ts.Node>();
   /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
@@ -3820,6 +3842,9 @@ export class Lowerer {
   >();
   /** Classes used as ThreadSlots keys: their hierarchies carry a slot word. */
   readonly threadSlotKeys = new Set<string>();
+  /** The JavaScript names of object literals' methods, by lifted function
+   * (function-names.ts). */
+  readonly objectMethodNames = new Map<string, string>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -4031,6 +4056,10 @@ export class Lowerer {
    * function called above the declaration statement reads that, never a
    * NULL slot. Filled by collectGlobals. */
   readonly varGlobalEntryInits = new Map<ts.SourceFile, IrGlobal[]>();
+  /** Initializer-less JavaScript lets holding a runtime handle or undefined
+   * that a closure captures (inferredEvolvingLetType). Reads inside a nested
+   * function lower as the checked-dynamic value. */
+  readonly closureDynLets = new Set<ts.Symbol>();
   /** Import-cycle bindings with an initialization flag, by global id, and
    * the top-level statements declaring them (cycle-initialization.ts). */
   readonly cycleInitFlags = new Map<string, CycleInitFlag>();
@@ -4422,6 +4451,7 @@ export class Lowerer {
       checkedTable("globalsByDeclNode", () => this.globalsByDeclNode.size),
       checkedTable("globalsList", () => this.globalsList.length),
       checkedTable("npmInitActions", () => this.npmInitActions.size),
+      checkedTable("islandImportActions", () => this.islandImportActions.size),
       checkedTable("jsonInitActions", () => this.jsonInitActions.size),
       checkedTable("jsonRequireModules", () => this.jsonRequireModules.size),
       checkedTable("jsonRequireCalls", () => this.jsonRequireCalls.size),
@@ -4441,6 +4471,7 @@ export class Lowerer {
       checkedTable("threadSlotNames", () => this.threadSlotNames.size),
       checkedTable("threadSlotFamilies", () => this.threadSlotFamilies.size),
       checkedTable("threadSlotKeys", () => this.threadSlotKeys.size),
+      checkedTable("objectMethodNames", () => this.objectMethodNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
       checkedTable("initNameOf", () => this.initNameOf.size),
@@ -4455,6 +4486,7 @@ export class Lowerer {
       checkedTable("preparedClassFactories", () => this.preparedClassFactories.size),
       checkedTable("preparingClassFactories", () => this.preparingClassFactories.size),
       checkedTable("varGlobalEntryInits", () => this.varGlobalEntryInits.size),
+      checkedTable("closureDynLets", () => this.closureDynLets.size),
       checkedTable("cycleInitFlags", () => this.cycleInitFlags.size),
       checkedTable("classInitFlags", () => this.classInitFlags.size),
       checkedTable("cycleInitDeclarations", () => this.cycleInitDeclarations.size),
@@ -4595,6 +4627,9 @@ export class Lowerer {
     // NI-5: whether a symbol names an island handle binding depends only on
     // its declaration, so the answer is a memo keyed by symbol.
     "islandHandleBindings",
+    // The island names native modules re-export: a pure function of the
+    // program's modules, collected before lowering begins.
+    "islandReexports",
     // The modules shared with the islands (NI-6): a pure function of the
     // program's modules, computed once, and the TDZ flags its plan gives a
     // statement.
@@ -4660,6 +4695,7 @@ export class Lowerer {
     "neverValued",
     "chainNarrowedType",
     "chainHandled",
+    "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
     "fnStack",
@@ -4766,6 +4802,7 @@ export class Lowerer {
       fixed("errorPropertyDispatchRevision", () => this.errorPropertyDispatchRevision),
       fixed("childAdditions", () => this.childAdditions),
       fixed("emitterEventTable", () => this.emitterEventTable),
+      fixed("emitterAnyNameListener", () => this.emitterAnyNameListener),
       fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),
       fixed("importRetryModules", () => this.importRetryModules),
       fixed("localSubclassIndex", () => this.localSubclassIndex),
@@ -9799,11 +9836,12 @@ export class Lowerer {
   /** Final retention, pruning, and module assembly shared by ordinary emit
    * and the retained reachability worklist. */
   finishModule(functions: IrFunction[]): LowerResult {
-    boxBuiltinValuesChecked(this, functions);
     // Every instance of every generic value is known now (the
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
     checkGenericIdentityPins(this);
+    boxBuiltinValuesChecked(this, functions);
+    finalizeFunctionNames(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
     finalizePrivateBrands(this, functions);
@@ -10765,30 +10803,29 @@ export class Lowerer {
     this.settleGenericDemandPriorities();
     this.shapes.settleDeclaredOrderPriorities();
     for (const finalize of this.shapeOrderMetadataFinalizers) finalize();
-    applyKeyOrderWitnesses(this, [
-      ...orderedUnits,
-      ...initFunctions,
-      ...instanceFunctions,
-      ...this.liftedFns,
-      ...this.implicitFns,
-    ]);
-    observeRecordLiteralRebuilds(null);
-    // A program whose functions never convert a checked-dynamic value into a
-    // closed record cannot keep a source view anywhere, so the captures that
-    // consult one keep their static copy (record-sources.ts).
-    const allFunctions = [
+    const keyOrderFunctions = [
       ...orderedUnits,
       ...initFunctions,
       ...instanceFunctions,
       ...this.liftedFns,
       ...this.implicitFns,
     ];
+    // A program whose functions never convert a checked-dynamic value into a
+    // closed record cannot keep a source view anywhere, so the captures that
+    // consult one keep their static copy (record-sources.ts). Decided before
+    // the key-order pass, which reads the fact (a same-shape copy of a kept
+    // record keeps its keys; the `"k" in r` sites answer through the view).
     const sourceScan = { memo: new Map<string, boolean>(), visiting: new Set<string>() };
-    for (const fn of allFunctions) {
+    for (const fn of keyOrderFunctions) {
       if (!functionKeepsRecordSources(this, fn, sourceScan)) continue;
       this.recordSourcesPossible = true;
       break;
     }
+    applyKeyOrderWitnesses(this, keyOrderFunctions);
+    // A kept width spread builds a record that holds undeclared keys, so the
+    // captures that consult a kept source must be active for it too.
+    if (this.keyOrder.keptWidthSpreads > 0) this.recordSourcesPossible = true;
+    observeRecordLiteralRebuilds(null);
     for (const finalize of this.shapeOrderHelperFinalizers) finalize();
     this.settleSharedHelperLocations([
       ...orderedUnits,
@@ -14113,6 +14150,10 @@ export class Lowerer {
             );
           }
         }
+        // An EMPTY literal carries no element to select an arm by: it
+        // builds as the union's first array arm (the emptyArrayLiteralArm
+        // rule the contextual union and the `?? []` default share).
+        if (!arm) arm = emptyArrayLiteralArm(x, arms) ?? undefined;
         if (arm) {
           const built = this.lowerArrayLiteral(
             x,
@@ -14273,7 +14314,47 @@ export class Lowerer {
     if (this.returnsLiteralIntoDyn(node, expected)) return this.lowerExprExpecting(node, expected);
     if (this.returnsFreshCollection(node) && expected.kind !== "void")
       return this.lowerExprExpecting(node, expected);
+    // A fresh object literal into a record result: the same
+    // destination-directed construction. An unannotated method inside a
+    // contextually typed literal is checked against the CONTEXTUAL
+    // signature's result while its own return type stays the literal's
+    // inferred (narrower) record — `ToolDefinition<Schema, Details>`
+    // methods returning `{ content, details }`. Building at the
+    // contextual type would then coerce that wider record into the
+    // declared result and refuse; the result slot is the layout.
+    if (this.returnsFreshRecord(node, expected)) return this.lowerExprExpecting(node, expected);
     return this.asyncReturnValueOf(node, this.lowerExpr(node), expected);
+  }
+
+  /** A fresh object literal returned into a RECORD result whose ordinary
+   * construction cannot reach that result: not a thenable, so it is built
+   * at the result type like a synchronous return. An unannotated method
+   * inside a contextually typed literal is checked against the CONTEXTUAL
+   * signature's result while its own return type stays the literal's
+   * inferred (narrower) record — `ToolDefinition<Schema, Details>` methods
+   * returning `{ content, details }`. Building at the contextual type
+   * would then coerce that wider record into the declared result and
+   * refuse; the result slot is the layout. A literal that declares `then`
+   * is awaited instead, and a literal whose contextual build does convert
+   * keeps the ordinary lowering, so no convertible value changes. */
+  private returnsFreshRecord(node: ts.Expression, expected: IrType): boolean {
+    if (expected.kind !== "record") return false;
+    let e = node;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (!ts.isObjectLiteralExpression(e)) return false;
+    if (this.checker.getPropertyOfType(this.typeOf(e), "then") !== undefined) return false;
+    // The record the ordinary path builds: the literal's context, with an
+    // async return's `T | PromiseLike<T>` stripped to the awaited record
+    // (object-literals.ts does the same before mapping).
+    let context = this.checker.getContextualType(e) ?? this.typeOf(e);
+    if (
+      context.isUnionType() &&
+      ts.constituentTypes(context).some((t) => ts.symbolNameOf(t.getSymbol()) === "PromiseLike")
+    )
+      context = this.checker.getAwaitedType(context) ?? context;
+    const built = this.mapTypeOf(context);
+    if (!built || built.kind !== "record") return false;
+    return this.widthLiftPlan(built, expected) === null;
   }
 
   /** An array literal or a `new Map(...)`, `new Set(...)` or `new
@@ -14450,7 +14531,8 @@ export class Lowerer {
     if (
       this.adoptsReturnedPromise() &&
       !this.returnsLiteralIntoDyn(node, expected) &&
-      !this.returnsFreshCollection(node)
+      !this.returnsFreshCollection(node) &&
+      !this.returnsFreshRecord(node, expected)
     ) {
       // The async return lowers its operand untyped first (a promise
       // adopts before its payload converts); a maybe-promise union needs
@@ -16910,6 +16992,7 @@ export class Lowerer {
   }
 
   fieldSetStmt(target: FieldTarget, value: IrExpr, loc: SrcLoc, blame: ts.Node): IrStmt {
+    refuseHeldEnvWrite(this, blame);
     return markSloppyRecordWrites(this, fieldSetStmt(this, target, value, loc, blame), blame);
   }
 

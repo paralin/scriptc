@@ -1955,6 +1955,9 @@ export function noteDynamicIdentityComparison(
   left: ts.Node,
   right: ts.Node,
 ): void {
+  // A function compared with a string, number, boolean, bigint or symbol
+  // is unequal whichever instance it is, as in JavaScript.
+  if (isPrimitiveTyped(lowerer, left) || isPrimitiveTyped(lowerer, right)) return;
   // The only work done while lowering. No instance count can gate this:
   // a value reference's instance is interned when its binding settles,
   // which can be later than the comparison that reads it, so the notes
@@ -1979,6 +1982,19 @@ export function notePinnedIdentityComparison(
 ): void {
   if (mightNameBinding(left) || mightNameBinding(right))
     lowerer.pinnedIdentityComparisons.push({ node, left, right, leftInstance, rightInstance });
+}
+
+const PRIMITIVE_TYPE_FLAGS =
+  ts.TypeFlags.StringLike |
+  ts.TypeFlags.NumberLike |
+  ts.TypeFlags.BooleanLike |
+  ts.TypeFlags.BigIntLike |
+  ts.TypeFlags.ESSymbolLike;
+
+/** Whether the checker types `node` as a string, number, boolean, bigint or
+ * symbol (a union with any other member is not). */
+function isPrimitiveTyped(lowerer: Lowerer, node: ts.Node): boolean {
+  return (lowerer.typeOf(node).flags & PRIMITIVE_TYPE_FLAGS) !== 0;
 }
 
 /** Whether an expression could name a binding at all — an identifier or a

@@ -75,7 +75,7 @@ export interface RuntimePackManifest {
   flavors: Partial<Record<RuntimePackFlavor, RuntimePackFlavorManifest>>;
   archives: RuntimePackArchive[];
   /** Files the linked executable needs at RUN time rather than at link time,
-   * installed beside it on every build. ICU's data file (icudt78l.dat, 31.6
+   * installed beside it on every build. ICU's data file (icudt78l.dat, 11.1
    * MiB) is the only one; Intl programs copy it, every other program links
    * neither ICU nor its data. */
   data?: RuntimePackArtifact[];
@@ -311,6 +311,7 @@ export function effectiveRuntimeFeatures(
   const tlsCaEffective = features.tlsCa || tlsEffective;
   return {
     ...features,
+    fsBufferBrand: features.fsBufferBrand === true,
     workers: features.workers === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
@@ -492,7 +493,7 @@ export function selectRuntimePackArtifacts(
     archives: manifest.archives.filter((archive) =>
       evaluateRuntimePredicate(archive.predicate, features),
     ),
-    // ICU's data file is 31.6 MiB: only a program that links ICU installs it.
+    // ICU's data file is 11.1 MiB: only a program that links ICU installs it.
     data: features.intl === true ? (manifest.data ?? []) : [],
     systemLibraries: manifest.system_libraries
       .filter((entry) => evaluateRuntimePredicate(entry.predicate, features))
