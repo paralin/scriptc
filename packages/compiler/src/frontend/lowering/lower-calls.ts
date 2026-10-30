@@ -9676,51 +9676,72 @@ function lowerObjectStaticCall(
     lowerer.linkedHelperFinalizers.push(() => {
       // The answer for the composed record of a link, which can itself be
       // a linked copy or keep a checked source: their properties come first.
-      const answer = (composed: IrExpr & { kind: "varRef" }): IrStmt[] => {
-        const composedT = composed.type as IrType & { kind: "record" };
-        const sourceShape = lowerer.shapes.get(composedT.shapeId)!;
-        const view: IrExpr = { kind: "dynFrom", value: composed, liveRef: true, type: DYN, loc };
-        const viewAnswer: IrStmt = {
-          kind: "return",
-          value: {
-            kind: "dynCheck",
+      // `path` holds the record types the links followed so far. Two types
+      // can link both ways (each lacks an optional field of the other): a
+      // composed record of this helper's own type calls the helper, and one
+      // of another type on the path answers from its checked view.
+      const answerAt =
+        (path: ReadonlySet<string>) =>
+        (composed: IrExpr & { kind: "varRef" }): IrStmt[] => {
+          const composedT = composed.type as IrType & { kind: "record" };
+          const sourceShape = lowerer.shapes.get(composedT.shapeId)!;
+          const view: IrExpr = { kind: "dynFrom", value: composed, liveRef: true, type: DYN, loc };
+          const viewAnswer: IrStmt = {
+            kind: "return",
             value: {
-              kind: "libCall",
-              fn: member === "values" ? "dyn.objValues" : "dyn.objEntries",
-              args: [view],
-              type: DYN,
+              kind: "dynCheck",
+              value: {
+                kind: "libCall",
+                fn: member === "values" ? "dyn.objValues" : "dyn.objEntries",
+                args: [view],
+                type: DYN,
+                loc,
+              },
+              type: resultT,
               loc,
             },
-            type: resultT,
-            loc,
-          },
-          loc,
-        };
-        let fits = true;
-        const walk = fieldWalk(composed, sourceShape, linkedOut(fn, resultT), () => {
-          fits = false;
-          return {
-            kind: "exprStmt",
-            expr: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
             loc,
           };
-        });
-        const further = linkedCopyBranches(lowerer, fn, composed, composedT.shapeId, answer);
-        if (!fits) return [...further, viewAnswer];
-        if (!recordMayKeepSource(lowerer, composedT)) return [...further, ...walk];
-        return [
-          ...further,
-          {
-            kind: "if",
-            cond: recordSourceTest(composed, loc),
-            then: [viewAnswer],
-            else_: null,
-            loc,
-          },
-          ...walk,
-        ];
-      };
-      answerLinkedCopies(lowerer, fn, argIr.shapeId, answer);
+          if (composedT.shapeId === argIr.shapeId)
+            return [
+              {
+                kind: "return",
+                value: { kind: "call", callee: fn.name, args: [composed], type: resultT, loc },
+                loc,
+              },
+            ];
+          if (path.has(composedT.shapeId)) return [viewAnswer];
+          let fits = true;
+          const walk = fieldWalk(composed, sourceShape, linkedOut(fn, resultT), () => {
+            fits = false;
+            return {
+              kind: "exprStmt",
+              expr: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+              loc,
+            };
+          });
+          const further = linkedCopyBranches(
+            lowerer,
+            fn,
+            composed,
+            composedT.shapeId,
+            answerAt(new Set([...path, composedT.shapeId])),
+          );
+          if (!fits) return [...further, viewAnswer];
+          if (!recordMayKeepSource(lowerer, composedT)) return [...further, ...walk];
+          return [
+            ...further,
+            {
+              kind: "if",
+              cond: recordSourceTest(composed, loc),
+              then: [viewAnswer],
+              else_: null,
+              loc,
+            },
+            ...walk,
+          ];
+        };
+      answerLinkedCopies(lowerer, fn, argIr.shapeId, answerAt(new Set([argIr.shapeId])));
     });
   }
   const callee = helper;

@@ -680,17 +680,80 @@ function linkedAnswer(
         "valueOf",
         loc,
       );
-      // A primitive answer converts as ToString does; any other answer
-      // makes ToPrimitive fall back to toString.
+      // A primitive answer converts as ToString does; an object makes
+      // ToPrimitive fall back to toString once valueOf has run.
       if (value.type.kind === "string") return [{ kind: "return", value, loc }];
       if (value.type.kind === "f64" || value.type.kind === "bool")
         return [
           { kind: "return", value: { kind: "toString", operand: value, type: STRING, loc }, loc },
         ];
-      return [{ kind: "return", value: recordToString(lowerer, helper, composed, loc), loc }];
+      const fallback: IrStmt = {
+        kind: "return",
+        value: recordToString(lowerer, helper, composed, loc),
+        loc,
+      };
+      if (OBJECT_KINDS.has(value.type.kind))
+        return [{ kind: "exprStmt", expr: value, loc }, fallback];
+      // Any other answer is tested once valueOf returns: null answers
+      // "object" and is falsy, and every object is truthy.
+      const boxed = lowerer.coerceToExpected(value, DYN);
+      if (boxed.type.kind !== "dyn") return [{ kind: "exprStmt", expr: value, loc }, fallback];
+      const resultId = declarerOf(helper.fn)("%valueOfResult", DYN);
+      const result = varRef(resultId, DYN, loc);
+      const typeOf: IrExpr = {
+        kind: "libCall",
+        fn: "dyn.typeof",
+        args: [result],
+        type: STRING,
+        loc,
+      };
+      const typeIs = (name: string): IrExpr => ({
+        kind: "strEq",
+        negated: false,
+        left: typeOf,
+        right: { kind: "strLit", value: name, type: STRING, loc },
+        type: BOOL,
+        loc,
+      });
+      return [
+        { kind: "varDecl", localId: resultId, init: boxed, loc },
+        {
+          kind: "if",
+          cond: {
+            kind: "logical",
+            op: "||",
+            left: typeIs("function"),
+            right: {
+              kind: "logical",
+              op: "&&",
+              left: typeIs("object"),
+              right: { kind: "dynTest", test: "truthy", value: result, type: BOOL, loc },
+              type: BOOL,
+              loc,
+            },
+            type: BOOL,
+            loc,
+          },
+          then: [fallback],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: { kind: "toString", operand: result, type: STRING, loc }, loc },
+      ];
     }
   }
 }
+
+/** The IR type kinds whose values are always objects. */
+const OBJECT_KINDS: ReadonlySet<string> = new Set([
+  "record",
+  "object",
+  "array",
+  "map",
+  "set",
+  "func",
+  "promise",
+]);
 
 /** `%rec.<hint>.<n>(r)` over the source type of `composed`: ToString (or
  * ToPrimitive with the default hint) as the record's other properties

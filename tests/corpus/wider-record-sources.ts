@@ -126,3 +126,45 @@ function ordered(flip: boolean): Ordered {
 const flipped: Plain = ordered(true);
 const straight: Plain = ordered(false);
 console.log(Object.keys(flipped).join(","), JSON.stringify(flipped), JSON.stringify(straight));
+
+// Two types that each lack an optional field of the other convert both
+// ways, and each copy lists the first object's values.
+type OptB = { a: number; b?: number };
+type OptC = { a: number; c?: number };
+const withB: OptB = { a: 1, b: 2 };
+const asC: OptC = withB;
+const backToB: OptB = asC;
+console.log(Object.values(backToB), Object.entries(asC), JSON.stringify(backToB));
+
+// `+` calls the first object's valueOf even when it returns an object,
+// which then falls back to toString; a throw propagates.
+let valueOfCalls = 0;
+const objectValued = {
+  a: 1,
+  b: 2,
+  valueOf() {
+    valueOfCalls++;
+    return {};
+  },
+  toString() {
+    return "objectValued";
+  },
+};
+const objectValuedOne: Plain = objectValued;
+console.log("" + objectValuedOne, valueOfCalls);
+const throwing = {
+  a: 1,
+  b: 2,
+  valueOf(): object {
+    throw new Error("valueOf threw");
+  },
+};
+const throwingOne: Plain = throwing;
+try {
+  console.log("" + throwingOne);
+} catch (e) {
+  console.log("caught", (e as Error).message);
+}
+const untyped = { a: 1, b: 2, valueOf(): unknown { return valueOfCalls > 1 ? null : 5; } };
+const untypedOne: Plain = untyped;
+console.log("" + untypedOne, (valueOfCalls++, "" + untypedOne));
