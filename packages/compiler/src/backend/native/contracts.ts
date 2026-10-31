@@ -134,6 +134,9 @@ export interface CcOptions {
   /** ChildProcess listener removal and signalCode: compiles
    * scr_child_lifecycle.c. */
   childLifecycle?: boolean;
+  /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
+   * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
+  childOptionExt?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
@@ -141,6 +144,9 @@ export interface CcOptions {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * compiles scr_dyn_integrity.c. */
   dynIntegrityQueries?: boolean;
+  /** A generator that binds its parameters at the call: compiles
+   * scr_gen_bind.c. */
+  genBind?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
@@ -186,6 +192,9 @@ export interface CcOptions {
   /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers
    * NULL for a field a partial record view does not have. */
   recordViewPartial?: boolean;
+  /** SCR_JS_OBJECT_MODEL: the build of a unit that carries every JavaScript
+   * object model feature the program reaches (t262-da §J). */
+  jsObjectModel?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
