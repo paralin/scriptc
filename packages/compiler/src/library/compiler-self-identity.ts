@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +14,18 @@ export interface CompilerImplementationDependency {
 }
 
 export interface CompilerImplementationIdentity {
+  digest: string;
+  dependencies: CompilerImplementationDependency[];
+}
+
+/** Where an installed package keeps the digest it computed for itself. The
+ * directory is outside the hashed file set, and the metadata proof the record
+ * carries decides whether the digest still describes the package. */
+const INSTALL_RECORD_DIRECTORY = ".scriptc";
+const INSTALL_RECORD_NAME = "install-digest.json";
+
+interface InstallDigestRecord {
+  version: 1;
   digest: string;
   dependencies: CompilerImplementationDependency[];
 }
@@ -44,34 +56,95 @@ function dependency(
       };
 }
 
+function installRecordPath(root: string): string {
+  return join(root, INSTALL_RECORD_DIRECTORY, INSTALL_RECORD_NAME);
+}
+
+async function readInstallDigest(root: string): Promise<InstallDigestRecord | null> {
+  try {
+    const parsed = JSON.parse(
+      await readFile(installRecordPath(root), "utf8"),
+    ) as Partial<InstallDigestRecord>;
+    if (parsed.version !== 1 || typeof parsed.digest !== "string") return null;
+    if (!Array.isArray(parsed.dependencies)) return null;
+    return { version: 1, digest: parsed.digest, dependencies: parsed.dependencies };
+  } catch {
+    return null;
+  }
+}
+
+/** A read-only install has nowhere to keep a digest and keeps hashing its
+ * files on every build; the record is an optimization, never a requirement.
+ * An absent package root is left for the scan to report, not created here. */
+async function ensureInstallRecordDirectory(root: string): Promise<void> {
+  try {
+    if (!(await lstat(root)).isDirectory()) return;
+    await mkdir(join(root, INSTALL_RECORD_DIRECTORY), { recursive: true });
+  } catch {
+    // See above.
+  }
+}
+
+async function writeInstallDigest(
+  root: string,
+  digest: string,
+  dependencies: CompilerImplementationDependency[],
+): Promise<void> {
+  const record: InstallDigestRecord = { version: 1, digest, dependencies };
+  try {
+    await writeFile(installRecordPath(root), `${JSON.stringify(record)}\n`, { mode: 0o600 });
+  } catch {
+    // See above.
+  }
+}
+
 /** Content identity plus a cheap replay proof for the compiler package that
  * produced an early frontend artifact. Full compiles hash every byte before
  * publication; the CLI fast path validates the captured inode/time/size
- * metadata and loads the large compiler graph only when anything changed. */
+ * metadata and loads the large compiler graph only when anything changed.
+ * A build reuses the digest the package recorded for itself while that
+ * metadata proof still matches, so one install hashes its files once. */
 export async function compilerImplementationIdentity(
   captureDependencies = true,
   implementationRoot = compilerImplementationRoot(),
 ): Promise<CompilerImplementationIdentity> {
-  const entries: { path: string; directory?: CompilerImplementationDependency | null }[] = [];
+  const recorded = await readInstallDigest(implementationRoot);
+  if (
+    recorded !== null &&
+    (await compilerImplementationDependenciesStillMatch(recorded.dependencies))
+  )
+    return {
+      digest: recorded.digest,
+      dependencies: captureDependencies ? recorded.dependencies : [],
+    };
+  // Sorted depth-first order is deliberately DIFFERENT from sorting the
+  // complete paths (a.ts would precede a/index.ts).
+  const entries: { path: string; directory: CompilerImplementationDependency | null }[] = [];
   const dependencies: CompilerImplementationDependency[] = [];
   const walk = async (directory: string): Promise<void> => {
     // Capture directories BEFORE enumeration: a new child arriving during
     // the scan must invalidate this proof, even if readdir did not see it.
-    entries.push({
-      path: directory,
-      directory: captureDependencies ? dependency(directory, await lstat(directory)) : null,
-    });
+    entries.push({ path: directory, directory: dependency(directory, await lstat(directory)) });
     const children = await readdir(directory, { withFileTypes: true });
     children.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of children) {
+      // The record directory is outside the identity; it is created before
+      // the scan so the root directory's captured metadata stays stable.
+      if (
+        directory === implementationRoot &&
+        entry.name === INSTALL_RECORD_DIRECTORY &&
+        entry.isDirectory()
+      )
+        continue;
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
         await walk(path);
       } else if (entry.isFile()) {
-        entries.push({ path });
+        entries.push({ path, directory: null });
       }
     }
   };
+  await ensureInstallRecordDirectory(implementationRoot);
   await walk(implementationRoot);
   // Keep the v1 digest byte-identical: dependency metadata augments replay
   // validation without invalidating every existing library/executable entry.
@@ -84,8 +157,8 @@ export async function compilerImplementationIdentity(
   for (let start = 0; start < entries.length; start += batchSize) {
     const batch = await Promise.all(
       entries.slice(start, start + batchSize).map(async (entry) => {
-        if (entry.directory !== undefined) return { ...entry, info: entry.directory, bytes: null };
-        const info = captureDependencies ? dependency(entry.path, await lstat(entry.path)) : null;
+        if (entry.directory !== null) return { ...entry, info: entry.directory, bytes: null };
+        const info = dependency(entry.path, await lstat(entry.path));
         return { ...entry, info, bytes: await readFile(entry.path) };
       }),
     );
@@ -100,7 +173,12 @@ export async function compilerImplementationIdentity(
       }
     }
   }
-  return { digest: hash.digest("hex"), dependencies };
+  const digest = hash.digest("hex");
+  await writeInstallDigest(implementationRoot, digest, dependencies);
+  return {
+    digest,
+    dependencies: captureDependencies ? dependencies : [],
+  };
 }
 
 function validDependency(value: unknown): value is CompilerImplementationDependency {

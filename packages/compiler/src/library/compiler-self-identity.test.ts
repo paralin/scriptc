@@ -1,5 +1,15 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -20,6 +30,14 @@ async function fixture(): Promise<string> {
   );
   scratch.push(root);
   return root;
+}
+
+async function recordedDigest(root: string): Promise<string> {
+  const record = JSON.parse(
+    await readFile(join(root, ".scriptc", "install-digest.json"), "utf8"),
+  ) as { version: number; digest: string };
+  expect(record.version).toBe(1);
+  return record.digest;
 }
 
 test("parallel fingerprinting preserves the v1 byte stream and dependency order across batches", async () => {
@@ -108,7 +126,52 @@ test.skipIf(process.platform === "win32")(
 
 test("missing compiler roots fail instead of producing a usable identity", async () => {
   const root = await fixture();
-  await expect(compilerImplementationIdentity(true, join(root, "missing"))).rejects.toMatchObject({
+  const missing = join(root, "missing");
+  await expect(compilerImplementationIdentity(true, missing)).rejects.toMatchObject({
     code: "ENOENT",
   });
+  // Recording a digest must not bring a missing package root into existence.
+  await expect(stat(missing)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("an unchanged install reuses the digest it recorded", async () => {
+  const root = await fixture();
+  await writeFile(join(root, "compiler.js"), "one");
+  const first = await compilerImplementationIdentity(true, root);
+  expect(await recordedDigest(root)).toBe(first.digest);
+  const record = join(root, ".scriptc", "install-digest.json");
+  await utimes(record, new Date(1_000), new Date(1_000));
+  const again = await compilerImplementationIdentity(true, root);
+  expect(again).toEqual(first);
+  // A reused digest leaves the record untouched; a recomputed one rewrites it.
+  expect((await stat(record)).mtimeMs).toBe(1_000);
+});
+
+test("a modified installed package is detected", async () => {
+  const root = await fixture();
+  const source = join(root, "compiler.js");
+  await writeFile(source, "one");
+  const before = await compilerImplementationIdentity(true, root);
+  await writeFile(source, "two");
+  await utimes(source, new Date(1_000), new Date(1_000));
+  const after = await compilerImplementationIdentity(true, root);
+  expect(after.digest).not.toBe(before.digest);
+  expect(await recordedDigest(root)).toBe(after.digest);
+  // The refreshed record describes the package as it is now.
+  expect(await compilerImplementationDependenciesStillMatch(after.dependencies)).toBe(true);
+});
+
+test("an install that cannot store its digest still hashes its files", async () => {
+  const root = await fixture();
+  await writeFile(join(root, "compiler.js"), "one");
+  // A file in place of the record directory makes the write fail.
+  await writeFile(join(root, ".scriptc"), "not a directory");
+  const first = await compilerImplementationIdentity(true, root);
+  const second = await compilerImplementationIdentity(true, root);
+  expect(second.digest).toBe(first.digest);
+  expect(first.dependencies.map((item) => relative(root, item.path))).toEqual([
+    "",
+    ".scriptc",
+    "compiler.js",
+  ]);
 });
