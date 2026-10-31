@@ -432,9 +432,13 @@ static ScrStr *scr_str_new_ascii(const char *bytes, size_t len) {
 #ifndef SCR_RC_AUDIT
 static SCR_TL ScrStr *scr_str_spare;
 #endif
+/* The largest block the spare keeps. A larger one stays resident until a
+ * string of about its size comes along, which may be never: a program that
+ * replaces a 50 MB input with its edited copy would otherwise hold both. */
+#define SCR_STR_SPARE_MAX ((size_t)1 << 20)
 
 /* A spare-block reuse must not waste grossly (cap <= 4x the need) and only
- * sizable blocks are worth stashing (>= 512). */
+ * sizable blocks are worth stashing (512 bytes to SCR_STR_SPARE_MAX). */
 static ScrStr *scr_str_take_spare(size_t len) {
 #ifndef SCR_RC_AUDIT
   ScrStr *s = scr_str_spare;
@@ -483,7 +487,7 @@ void scr_str_release(ScrStr *s) {
     scr_live_strings--;
 #endif
 #ifndef SCR_RC_AUDIT
-    if (s->cap >= 512) {
+    if (s->cap >= 512 && s->cap <= SCR_STR_SPARE_MAX) {
       ScrStr *old = scr_str_spare;
       scr_str_spare = s;
       if (!old) return;
@@ -3931,6 +3935,30 @@ ScrStr *scr_qs_escape(ScrStr *s) {
     return out ? out : scr_str_empty();
   }
   return scr_str_encode_uri_component(s);
+}
+
+/* querystring.escape(value) of a value that may not be a string: Node's
+ * qsEscape converts an object or null with String(value) and any other
+ * value with value + "", so a symbol throws TypeError. A function converts
+ * to its source text, which a compiled binary does not keep: SC2020. +1, or
+ * NULL with the exception pending. */
+ScrStr *scr_qs_escape_value(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_SYMBOL) {
+    static const char message[] = "Cannot convert a Symbol value to a string";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  if (value->kind == SCR_DYN_FUNC) {
+    static const char message[] =
+        "querystring.escape of a function converts its source text, which a compiled binary does not keep";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (!text) return NULL;
+  ScrStr *out = scr_qs_escape(text);
+  scr_str_release(text);
+  return out;
 }
 
 /* One %XX escape's byte, or -1 (bad hex / truncated). */

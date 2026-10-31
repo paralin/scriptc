@@ -43,6 +43,16 @@ ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, 
 struct ScrNodeBridge;
 struct ScrNodeIoState;
 void scr_loop_host(const struct ScrNodeBridge *bridge, double since_ms);
+/* The lowest live frame of Node's stack while a fiber runs (the SCR_NODE_ISLANDS
+ * build of scr_async.c records it at each switch from Node's stack to a
+ * fiber; 0: none), and the test for Node's stack it uses. */
+extern uintptr_t scr_node_stack_low;
+extern bool (*scr_node_stack_has)(uintptr_t sp);
+/* Around a nested entry: the runtime's scheduling state of the suspended
+ * calling fiber, saved and put back (the SCR_NODE_ISLANDS build of
+ * scr_async.c). */
+void *scr_loop_nested_enter(void);
+void scr_loop_nested_leave(void *save);
 bool scr_loop_is_hosted(void);
 void scr_loop_hosted_run(uint32_t kind, uint32_t token);
 void scr_loop_hosted_io_state(struct ScrNodeIoState *state);
@@ -111,6 +121,33 @@ ScrDyn *scr_node_island_copy_arrays(ScrDyn *value);
 ScrPromise *scr_node_island_await_copy(ScrDyn *value);
 uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
 
+/* The operations scr_json.c's dynamic paths route to an island handle
+ * (typeof, calls, ToPrimitive, `in`, delete, Object.keys and the rest).
+ * scr_node_island_handle.c installs them from a constructor, so they are
+ * set in every program that can hold an island handle, and scr_json.c
+ * builds one object whether or not a program links the island units. */
+typedef struct ScrNiDynOps {
+  ScrDyn *(*get)(ScrDyn *obj, ScrDyn *key);
+  ScrDyn *(*get_str)(ScrDyn *obj, const char *key, size_t len);
+  int (*has)(ScrDyn *obj, ScrDyn *key);
+  int (*delete_key)(ScrDyn *obj, ScrDyn *key);
+  ScrDyn *(*own_keys)(ScrDyn *obj, int mode);
+  ScrDyn *(*call)(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc);
+  ScrDyn *(*construct)(ScrDyn *ctor, ScrDyn *const *args, size_t argc);
+  ScrStr *(*type_of)(ScrDyn *value);
+  bool (*util_type_is)(const ScrDyn *value, const ScrStr *probe);
+  int (*instance_of)(ScrDyn *value, ScrDyn *ctor);
+  ScrDyn *(*to_primitive)(const ScrDyn *self, int hint);
+  bool (*is_function)(const ScrDyn *value);
+} ScrNiDynOps;
+extern const ScrNiDynOps *scr_ni_dyn_ops;
+
+/* scr_ni_is_handle for units that also build into programs without the
+ * island units. */
+static inline bool scr_ni_dyn_handle(const ScrDyn *value) {
+  return value != NULL && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_NODE_ISLAND;
+}
+
 /* Between the two island units. */
 struct ScrNodeValue;
 const struct ScrNodeBridge *scr_ni_bridge(void);        /* loads Node */
@@ -170,6 +207,17 @@ int scr_ni_host_export_op(uint32_t id, uint32_t op, const struct ScrNodeValue *a
                           struct ScrNodeValue *out);
 /* Promise settlement callback (SCR_NODE_ISLANDS build of scr_async.c). */
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src));
+void *scr_promise_untraced_dyn_payload(const ScrPromise *p);
+
+/* ── cross-heap cycle collection (scope-B NI-8, scr_node_island_gc.c) ──── */
+const void *scr_ni_export_identity(uint32_t id);
+void *scr_ni_gc_ref(const ScrDyn *box, size_t *rc, uint32_t *id);
+void *scr_ni_gc_ref_info(void *ref, size_t *rc, uint32_t *id);
+size_t scr_ni_gc_pins(void ***objs, void ***refs);
+struct ScrNodeGcResult;
+int scr_ni_host_gc_analyze(const uint32_t *exports, size_t nexports,
+                           struct ScrNodeGcResult *out);
+void scr_ni_gc_cleanup(void); /* at exit */
 
 /* ── deferred island modules (scope-B NI-7, scr_node_island_boot.c) ─────
  * nodeIsland.defer(path, snapshot): a statically imported island module the
@@ -190,8 +238,10 @@ void *scr_ni_stub_of(const ScrDyn *value); /* the stub entry of an unmaterialize
 bool scr_ni_stub_reconcile(ScrDyn *stub, ScrDyn *real);
 ScrDyn *scr_ni_boot_member(void *stub, const char *key, size_t len); /* +1 or NULL: unknown */
 bool scr_ni_boot_plain_class(void *stub);
+bool scr_ni_boot_snapshot_valid(void *stub); /* its module has not evaluated */
 const char *scr_ni_pack_dir(void); /* the libnode pack directory this run uses */
 void scr_ni_boot_stub_failed(void *stub); /* raises the module's load error */
+void scr_ni_boot_materialize(void *stub); /* evaluates the stub's module (component) */
 /* Called at the end of Node's start (scr_node_island.c), set by the boot unit. */
 extern void (*scr_ni_started_hook)(void);
 

@@ -56,6 +56,7 @@ import { typeKey } from "../../type-mapper.js";
 import {
   lowerArrayCallback,
   requireProducedArrayElement,
+  unitOnlyArrayElement,
   callbackArrayElement,
   truthyFilterCallback,
 } from "./callback-arguments.js";
@@ -68,7 +69,8 @@ import {
 } from "./array-iteration.js";
 import { dynamicReceiverThrows } from "./dynamic-receivers.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
-import { checkedFilterNarrowing } from "./filter-predicates.js";
+import { checkedFilterNarrowing, supersetGuardFields } from "./filter-predicates.js";
+import { omittableTrailingParam } from "../coercions/function-adapters.js";
 
 /** `a.map(fn)` / `a.filter(fn)` / `a.forEach(fn)` desugar to a direct
  * call of a synthetic module function — one per method + element/result
@@ -109,7 +111,14 @@ export function lowerArrayHofCall(
   }
   const callback = booleanFilter
     ? { fnArg: truthyFilterCallback(lowerer, valueT, loc), arity: 1, unread: false }
-    : lowerArrayCallback(lowerer, argNode, [valueT], arrayOf(elem));
+    : lowerArrayCallback(
+        lowerer,
+        argNode,
+        [valueT],
+        arrayOf(elem),
+        false,
+        method === "map" ? (unitOnlyArrayElement(lowerer, call) ?? undefined) : undefined,
+      );
   const { fnArg, arity } = callback;
   // Only an array that can hold elements outside its element type needs to
   // leave an element its callback ignores unread.
@@ -277,6 +286,19 @@ function filterKeptElem(
     "keep the receiver's element type instead — annotate the callback's return ': boolean' " +
     "(the checker then skips the predicate) or annotate the result with the receiver's own " +
     "element type — and narrow the elements after";
+  // A record target that declares fields the receiver's record element has no
+  // slot for: the elements were narrowed when they were stored, so those
+  // fields no longer exist at runtime and no per-field check can recover them.
+  const widened = supersetGuardFields(lowerer, elem, outElem);
+  const missingFields =
+    widened === null
+      ? ""
+      : ` (the receiver's element type has no slot for ${widened
+          .slice(0, 4)
+          .map((field) => `'${field}'`)
+          .join(", ")}${widened.length > 4 ? ` and ${widened.length - 4} more` : ""} — each ` +
+        `element was narrowed when it was stored, so those fields do not exist at runtime and ` +
+        `the predicate cannot make them real)`;
   const written =
     !booleanFilter &&
     ((!ts.isArrowFunction(argNode) && !ts.isFunctionExpression(argNode)) ||
@@ -293,14 +315,14 @@ function filterKeptElem(
         "SC1090",
         argNode,
         `narrowing '.filter' to '${lowerer.fmt(outElem)}' through a callback VALUE (no checked ` +
-          `conversion from '${lowerer.fmt(elem)}' — ${annotateEscape})`,
+          `conversion from '${lowerer.fmt(elem)}'${missingFields} — ${annotateEscape})`,
       );
     }
     lowerer.unsupported(
       "SC1090",
       argNode,
       `narrowing '.filter' to '${lowerer.fmt(outElem)}' with a hand-written type predicate (no ` +
-        `checked conversion from '${lowerer.fmt(elem)}' — ${annotateEscape})`,
+        `checked conversion from '${lowerer.fmt(elem)}'${missingFields} — ${annotateEscape})`,
     );
   }
   const classRefinement =
@@ -649,7 +671,14 @@ function arrayHofHelper(
  * original concrete array arm — never a copied `(T | U)[]` — and an
  * arm-specific function adapter wraps the element and receiver arguments
  * into the union-wide callback ABI. That preserves sparse-array reads,
- * callback mutation, and the callback's third-argument identity. */
+ * callback mutation, and the callback's third-argument identity.
+ *
+ * `filter` joins them: the kept elements are the checker's result element
+ * (`(b): b is TextContent` over `(TextContent | ImageContent)[] |
+ * (ThinkingContent | TextContent)[]` answers `TextContent[]`), so each arm
+ * filters its own array and converts its survivors through the checked
+ * narrowing — a predicate that kept an element it does not describe throws
+ * the TypeError. An arm with no such conversion leaves the fence in place. */
 export function lowerArrayUnionHofCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -657,7 +686,7 @@ export function lowerArrayUnionHofCall(
   receiverT: IrType & { kind: "union" },
 ): IrExpr | null {
   const method = access.name.text;
-  if (method !== "map" && method !== "forEach") return null;
+  if (method !== "map" && method !== "forEach" && method !== "filter") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const def = lowerer.unions.get(receiverT.unionId);
   if (!def || def.arms.length < 2 || !def.arms.every((arm) => arm.kind === "array")) return null;
@@ -685,15 +714,59 @@ export function lowerArrayUnionHofCall(
       ? valueArms[0]!
       : { kind: "union", unionId: lowerer.unions.intern(valueArms) };
   const argNode = call.arguments.nodes[0]!;
-  const { fnArg, arity } = lowerArrayCallback(lowerer, argNode, [valueT], receiverT);
+  const { fnArg, arity } = lowerArrayCallback(
+    lowerer,
+    argNode,
+    [valueT],
+    receiverT,
+    false,
+    method === "map" ? (unitOnlyArrayElement(lowerer, call) ?? undefined) : undefined,
+  );
   const fnRet = fnArg.type.ret;
   if (method === "map" && fnRet.kind === "void") {
     // `void[]` has no element (see the plain-receiver map path).
     lowerer.badType(call, lowerer.typeOf(call));
   }
   if (method === "map") requireProducedArrayElement(lowerer, call, "'.map()'", fnRet);
-  const outElem = method === "map" ? callbackArrayElement(lowerer, call, fnRet) : VOID;
-  const resultT: IrType = method === "map" ? arrayOf(outElem) : VOID;
+  if (method === "filter" && !filterPredicateOk(lowerer, fnRet)) {
+    if (fnRet.kind === "void") {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        "'.filter()' with a void-returning predicate (the callback return value is erased before its truthiness can be tested)",
+      );
+    }
+    lowerer.badType(call, lowerer.typeOf(call));
+  }
+  // `map` stores the callback's answer; `filter` keeps the elements its
+  // predicate named. The kept element is the CHECKER's result element, which
+  // for a written type predicate is narrower than every arm's own:
+  // `(b): b is TextContent` over `(TextContent | ImageContent)[] |
+  // (ThinkingContent | TextContent)[]` answers `TextContent[]`. Each arm
+  // filters its own concrete array and converts its survivors to that
+  // element through the checked narrowing — a predicate that kept an element
+  // it does not describe throws instead of misreading it. No conversion the
+  // arms cannot make honestly means the fence stays.
+  let outElem: IrType = VOID;
+  const narrowing: (string | null)[] = [];
+  if (method === "map") {
+    outElem = callbackArrayElement(lowerer, call, fnRet);
+  } else if (method === "filter") {
+    const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (!result || result.kind !== "array") return null;
+    outElem = result.elem;
+    const typeText = filterTypeText(lowerer, call);
+    for (const array of arrays) {
+      if (typeEquals(array.elem, outElem)) {
+        narrowing.push(null);
+        continue;
+      }
+      const helper = checkedFilterNarrowing(lowerer, array.elem, outElem, typeText, locOf(call));
+      if (helper === null) return null;
+      narrowing.push(helper);
+    }
+  }
+  const resultT: IrType = method === "forEach" ? VOID : arrayOf(outElem);
   for (const array of arrays) {
     const armFnT = funcOf(
       [arrayValueType(lowerer, array.elem), F64, array].slice(0, arity),
@@ -710,6 +783,7 @@ export function lowerArrayUnionHofCall(
     arity,
     fnRet,
     outElem,
+    narrowing,
     locOf(call),
   );
   return {
@@ -726,24 +800,31 @@ export function lowerArrayUnionHofCall(
 
 function arrayUnionHofHelper(
   lowerer: Lowerer,
-  method: "map" | "forEach",
+  method: "map" | "forEach" | "filter",
   receiverT: IrType & { kind: "union" },
   arrays: (IrType & { kind: "array" })[],
   callbackT: IrType & { kind: "func" },
   arity: number,
   fnRet: IrType,
   outElem: IrType,
+  narrowing: (string | null)[],
   loc: SrcLoc,
 ): string {
-  const resultT: IrType = method === "map" ? arrayOf(outElem) : VOID;
-  const key = `union:${method}:${receiverT.unionId}:${typeKey(callbackT)}:${typeKey(resultT)}`;
+  const resultT: IrType = method === "forEach" ? VOID : arrayOf(outElem);
+  // A filter's per-arm conversions are part of what the helper does, so two
+  // sites that share receiver, callback and result but convert differently
+  // keep their own helper. `map`/`forEach` never narrow, and leaving their
+  // key untouched keeps the helpers a program already emitted byte-identical.
+  const narrowingKey =
+    method === "filter" ? `:${narrowing.map((helper) => helper ?? "").join(",")}` : "";
+  const key = `union:${method}:${receiverT.unionId}:${typeKey(callbackT)}:${typeKey(resultT)}${narrowingKey}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%arr.union", key);
   lowerer.arrHofHelpers.set(key, name);
   const receiver = varRef("a.0", receiverT, loc);
   const callback = varRef("f.0", callbackT, loc);
-  const branch = (array: IrType & { kind: "array" }): IrStmt[] => {
+  const branch = (array: IrType & { kind: "array" }, index: number): IrStmt[] => {
     const tag = lowerer.armTag(receiverT.unionId, array);
     const concrete: IrExpr = {
       kind: "unionNarrow",
@@ -761,16 +842,38 @@ function arrayUnionHofHelper(
     if (!typeEquals(adapted.type, armFnT)) {
       throw new InternalCompilerError("lowerer bug: union-array callback stopped adapting");
     }
-    const callee = arrayHofHelper(lowerer, method, array.elem, fnRet, arity, loc, outElem);
-    const invoke: IrExpr = { kind: "call", callee, args: [concrete, adapted], type: resultT, loc };
+    const callee = arrayHofHelper(
+      lowerer,
+      method,
+      array.elem,
+      fnRet,
+      arity,
+      loc,
+      method === "filter" ? array.elem : outElem,
+    );
+    const invoke: IrExpr = {
+      kind: "call",
+      callee,
+      args: [concrete, adapted],
+      type: method === "filter" ? arrayOf(array.elem) : resultT,
+      loc,
+    };
+    // Survivors of this arm's own array, converted to the checker's result
+    // element. The helper throws for a kept element the predicate does not
+    // describe, so a lying predicate never reinterprets a value.
+    const armNarrow = narrowing[index] ?? null;
+    const answer: IrExpr =
+      armNarrow === null
+        ? invoke
+        : { kind: "call", callee: armNarrow, args: [invoke], type: resultT, loc };
     return resultT.kind === "void"
       ? [
           { kind: "exprStmt", expr: invoke, loc },
           { kind: "return", value: null, loc },
         ]
-      : [{ kind: "return", value: invoke, loc }];
+      : [{ kind: "return", value: answer, loc }];
   };
-  let body = branch(arrays[arrays.length - 1]!);
+  let body = branch(arrays[arrays.length - 1]!, arrays.length - 1);
   for (let i = arrays.length - 2; i >= 0; i--) {
     const array = arrays[i]!;
     body = [
@@ -785,7 +888,7 @@ function arrayUnionHofHelper(
           type: BOOL,
           loc,
         },
-        then: branch(array),
+        then: branch(array, i),
         else_: body,
         loc,
       },
@@ -1861,10 +1964,10 @@ export function lowerArrayFlatMapCall(
 /** How each arm of a flatMap callback's union result contributes to the
  * output: an array arm appends its elements, an array arm the checker
  * types `never[]` (an empty literal such as `s ? s : []`) appends nothing,
- * and any other arm appends itself. */
+ * a tuple arm appends its fields, and any other arm appends itself. */
 interface FlatMapUnionPlan {
   outElem: IrType;
-  arms: ("spread" | "empty" | "value")[];
+  arms: ("spread" | "empty" | "tuple" | "value")[];
 }
 
 /** The plan for a callback returning `T | U[]`: every non-array arm must
@@ -1882,15 +1985,18 @@ function flatMapUnionPlan(
   const outElem = out.elem;
   const arms = lowerer.unions.get(fnRet.unionId)?.arms;
   if (!arms) return null;
-  // The `never[]` constituents of the callback's checked result.
+  // The constituents of the callback's checked result that can hold no
+  // element: a `never[]` arm, and the empty tuple a bare `[]` arm infers
+  // when the enclosing call has a contextual array type (`return x ? [a]
+  // : []` in a `f(): T[]`).
   const emptyArms: IrType[] = [];
   const signature = lowerer.checker.getCallSignatures(lowerer.typeOf(argNode))[0];
   if (signature) {
     const ret = lowerer.checker.getReturnTypeOfSignature(signature);
     for (const part of ret.isUnionType() ? ts.constituentTypes(ret) : [ret]) {
-      if (!lowerer.checker.isArrayType(part)) continue;
-      const [element] = lowerer.checker.getTypeArguments(part as ts.TypeReference);
-      if (element === undefined || (element.flags & ts.TypeFlags.Never) === 0) continue;
+      if (!lowerer.checker.isArrayType(part) && !lowerer.checker.isTupleType(part)) continue;
+      const element = lowerer.checker.getTypeArguments(part as ts.TypeReference)[0];
+      if (element !== undefined && (element.flags & ts.TypeFlags.Never) === 0) continue;
       const mapped = lowerer.mapTypeOf(part);
       if (mapped) emptyArms.push(mapped);
     }
@@ -1902,12 +2008,19 @@ function flatMapUnionPlan(
     if (outElem.kind !== "union") return false;
     return lowerer.armTag(outElem.unionId, t) >= 0;
   };
+  const tupleConverts = (arm: IrType & { kind: "record" }): boolean =>
+    (lowerer.shapes.get(arm.shapeId)?.fields ?? []).every((f) => converts(f.type));
   const plan: FlatMapUnionPlan["arms"] = [];
   for (const arm of arms) {
     if (arm.kind === "array" && emptyArms.some((e) => typeEquals(e, arm))) plan.push("empty");
     // An array arm copies its elements as they are stored, a present
     // undefined included, so its element type is the result's.
     else if (arm.kind === "array" && typeEquals(arm.elem, outElem)) plan.push("spread");
+    // A contextual array type makes a multi-statement body's `[pair]`
+    // infer as a one-element TUPLE (`return x ? [pair] : []`), whose
+    // fields contribute in order.
+    else if (arm.kind === "record" && lowerer.shapes.get(arm.shapeId)?.tuple && tupleConverts(arm))
+      plan.push("tuple");
     else if (arm.kind !== "array" && converts(arm)) plan.push("value");
     else return null;
   }
@@ -1964,6 +2077,32 @@ function flatMapUnionHelper(
       loc,
     };
     if (plan.arms[tag] === "empty") return [];
+    if (plan.arms[tag] === "tuple") {
+      const tuple = arm as IrType & { kind: "record" };
+      // The fields are stored by name ("0", "1", "10", "2", …): the
+      // elements append in index order.
+      const elements = [...(lowerer.shapes.get(tuple.shapeId)?.fields ?? [])].sort(
+        (a, b) => Number(a.name) - Number(b.name),
+      );
+      return elements.map((field) => {
+        const read: IrExpr = {
+          kind: "recordGet",
+          obj: narrowed,
+          shapeId: tuple.shapeId,
+          field: field.name,
+          type: field.type,
+          loc,
+        };
+        return arrayValueStore(
+          lowerer,
+          outRef(),
+          outLength(),
+          lowerer.coerceToExpected(read, plan.outElem),
+          plan.outElem,
+          loc,
+        );
+      });
+    }
     if (plan.arms[tag] === "value") {
       // A unit arm's value is the unit itself, which has no narrowed
       // representation.
@@ -2332,42 +2471,77 @@ export function lowerArrayReduceCall(
   const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   const hasInit = call.arguments.nodes.length === 2;
-  const accT =
-    lowerer.runtimeOptionalReduceTypes.get(call) ??
-    (hasInit ? lowerer.irTypeOf(call) : arrayValueType(lowerer, elem));
-  if (accT.kind === "void" || accT.kind === "func") lowerer.badType(call, lowerer.typeOf(call));
+  const overrideT = lowerer.runtimeOptionalReduceTypes.get(call) ?? null;
+  const staticAccT =
+    overrideT ?? (hasInit ? lowerer.irTypeOf(call) : arrayValueType(lowerer, elem));
+  if (staticAccT.kind === "void" || staticAccT.kind === "func")
+    lowerer.badType(call, lowerer.typeOf(call));
   const lowered = lowerArrayCallback(
     lowerer,
     argNode,
-    [accT, arrayValueType(lowerer, elem)],
+    [staticAccT, arrayValueType(lowerer, elem)],
     arrT,
     false,
-    accT,
+    staticAccT,
   );
   const { fnArg, arity } = lowered;
+  // A JavaScript function with NO declared parameters whose body reads
+  // `arguments` has that hidden slot as its whole ABI, which the synthetic
+  // loop cannot fill: `callValue` passes exactly the declared parameters
+  // (none), so the callback would see an empty `arguments` where JavaScript
+  // passes (accumulator, element, index, array). Name the parameters
+  // instead; that is the same value with a checkable type. Read the
+  // callback's OWN type: the slot adaptation above (a dyn function boundary)
+  // erases the hidden slot from `fnArg.type`. A callback that names its
+  // parameters keeps working — `arguments` is built from the call's
+  // arguments there, not from a hidden slot.
+  if (
+    lowered.rawType.kind === "func" &&
+    lowered.rawType.params.length === 0 &&
+    lowered.rawType.rest === true &&
+    lowered.rawType.restAbi === undefined
+  )
+    lowerer.unsupported(
+      "SC1090",
+      argNode,
+      "a reduce callback that reads 'arguments' (name the parameters the callback uses)",
+    );
+  // The callback's own answer is what the accumulator receives. An inline
+  // lambda is contextually typed by the call (its returns coerce inside its
+  // own lowering), but a function DECLARATION keeps its declared return. When
+  // the checker's accumulator type cannot hold that value — `xs.reduce(function
+  // () { count++ }, 1)` answers undefined, a program the checker already
+  // diagnosed — the accumulator is the checked-dynamic value JavaScript
+  // produces instead of a miscast (the untyped-reduce shape; see
+  // accumulatorAdmitsAnswer).
+  const accT: IrType =
+    overrideT !== null || accumulatorAdmitsAnswer(lowerer, staticAccT, fnArg.type.ret)
+      ? staticAccT
+      : DYN;
   // Only an array that can hold elements outside its element type needs to
-  // leave an element its callback ignores unread.
+  // leave an element its callback ignores unread. A dynamic accumulator is
+  // the untyped shape; it keeps the single visit and the callback's own ABI.
   const unread = lowered.unread && elementMayBeForeign(lowerer, elem);
-  const fast = unread
-    ? null
-    : lowerFastCallback(
-        lowerer,
-        argNode,
-        [accT, arrayValueType(lowerer, elem)],
-        1,
-        elem,
-        arrT,
-        { fnArg, arity },
-        false,
-        accT,
-      );
+  const fast =
+    unread || accT.kind === "dyn"
+      ? null
+      : lowerFastCallback(
+          lowerer,
+          argNode,
+          [accT, arrayValueType(lowerer, elem)],
+          1,
+          elem,
+          arrT,
+          { fnArg, arity },
+          false,
+          accT,
+        );
   const helper = reduceHelper(
     lowerer,
     method,
     elem,
     accT,
-    fnArg.type.ret,
-    arity,
+    fnArg.type,
     hasInit,
     loc,
     callbackSite(fast ?? fnArg),
@@ -2380,6 +2554,39 @@ export function lowerArrayReduceCall(
   // effect, so the initial value still evaluates right after the callback.
   if (fast) args.push(fast);
   return { kind: "call", callee: helper, args, type: accT, loc };
+}
+
+/** The accumulator's value as the callback's first parameter declares it.
+ * Equal types pass the local straight through; a dynamic accumulator handed
+ * to a typed parameter converts at the call (the callback is lowered first,
+ * so its ABI is a fact and a value of another kind throws — "types don't
+ * lie"). */
+function accumulatorArgument(
+  lowerer: Lowerer,
+  param: IrType | undefined,
+  accT: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const value = varRef("acc.0", accT, loc);
+  return param === undefined || typeEquals(param, accT)
+    ? value
+    : lowerer.coerceToExpected(value, param);
+}
+
+/** Whether the checker's accumulator type stores the callback's answer
+ * itself. A scalar accumulator holds only its own scalar, and a void answer
+ * (a callback with no return statement) is `undefined`; both leave the
+ * checker's type unable to carry the value (a program the checker already
+ * diagnosed), which the reduction accumulates dynamically instead of
+ * miscasting. Every other pair keeps `coerceToExpected`'s static plan. */
+function accumulatorAdmitsAnswer(lowerer: Lowerer, accT: IrType, fnRet: IrType): boolean {
+  if (lowerer.coercibleValue(fnRet, accT)) return true;
+  if (fnRet.kind === "void" || isUnitType(fnRet)) return false;
+  return !(scalarKind(accT) && scalarKind(fnRet));
+}
+
+function scalarKind(t: IrType): boolean {
+  return t.kind === "f64" || t.kind === "string" || t.kind === "bool";
 }
 
 /** The reduce/reduceRight loops, from existing IR nodes:
@@ -2397,20 +2604,28 @@ function reduceHelper(
   method: "reduce" | "reduceRight",
   elem: IrType,
   accT: IrType,
-  fnRet: IrType,
-  arity: number,
+  fnArg: CallbackType,
   hasInit: boolean,
   loc: SrcLoc,
   site = "",
   fastT: CallbackType | null = null,
   unread = false,
 ): string {
+  // The callback's own ABI decides the helper's `f` slot: a dynamic
+  // accumulator (accT) is coerced at the call and the store, so the closure
+  // keeps the parameter types its lowering produced.
+  const fnT = fnArg;
+  const fnRet = fnT.ret;
+  const arity = fnT.params.length;
   const key = `${method}:${typeKey(elem)}:${typeKey(accT)}:${typeKey(fnRet)}:${arity}:${hasInit ? "init" : "seed"}${site}${fastT ? ":split" : ""}${unread ? ":unread" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%arr.${method}`, key);
   lowerer.arrHofHelpers.set(key, name);
-  if (method === "reduce")
+  // A dynamic accumulator stays out of the pipeline registry: the fused
+  // loops type their accumulator from the checker's view (arrHofInfo), which
+  // this shape contradicts.
+  if (method === "reduce" && accT.kind !== "dyn")
     lowerer.arrHofInfo.set(name, {
       method,
       elem,
@@ -2423,7 +2638,6 @@ function reduceHelper(
       unread,
     });
   const arrT = arrayOf(elem);
-  const fnT = funcOf([accT, arrayValueType(lowerer, elem), F64, arrT].slice(0, arity), fnRet);
 
   const n = varRef("n.0", F64, loc);
   const i = varRef("i.0", F64, loc);
@@ -2543,10 +2757,12 @@ function reduceHelper(
               {
                 kind: "callValue",
                 callee: varRef("f.0", fnT, loc),
-                args: [varRef("acc.0", accT, loc), visited(), i, varRef("a.0", arrT, loc)].slice(
-                  0,
-                  arity,
-                ),
+                args: [
+                  accumulatorArgument(lowerer, fnT.params[0], accT, loc),
+                  visited(),
+                  i,
+                  varRef("a.0", arrT, loc),
+                ].slice(0, arity),
                 type: fnRet,
                 loc,
               },
@@ -2701,11 +2917,15 @@ export function lowerArraySortCall(
   let fnArg =
     undefinedArg ?? lowerOptionalElementComparator(lowerer, argNode, unwrappedArg, elem, arrT);
   // Reusable JS comparators often accept checked values. Adapt the array's
-  // element ABI just as other array callbacks do before sorting.
+  // element ABI just as other array callbacks do before sorting. A
+  // comparator declaring MORE parameters than sort passes (`(a, b, loose?)`,
+  // the imported semver shape) receives the surplus ones as undefined — the
+  // completion an ordinary two-argument call performs — so it adapts to the
+  // (a, b) slot like any other wider signature.
   if (
     fnArg.type.kind === "func" &&
-    fnArg.type.params.length <= 2 &&
-    fnArg.type.params.every((param) => lowerer.coercibleValue(elem, param))
+    fnArg.type.params.slice(2).every((param) => omittableTrailingParam(lowerer, param)) &&
+    fnArg.type.params.slice(0, 2).every((param) => lowerer.coercibleValue(elem, param))
   ) {
     // Arithmetic on inferred JS values retains a checked result because
     // it can produce BigInt. The sort callback still requires a number.
@@ -2714,7 +2934,7 @@ export function lowerArraySortCall(
         ? F64
         : fnArg.type.ret;
     const expected = funcOf(
-      fnArg.type.params.map(() => elem),
+      fnArg.type.params.slice(0, 2).map(() => elem),
       result,
     );
     if (!typeEquals(fnArg.type, expected)) fnArg = lowerer.coerceToExpected(fnArg, expected);

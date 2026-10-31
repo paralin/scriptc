@@ -1,6 +1,6 @@
 import { InternalCompilerError } from "../errors.js";
 import { keyedHelperName, type KeyedNameOwner } from "./lowering/stable-names.js";
-import type { HeldContents, JournalTable } from "./lowering/unit-journal.js";
+import { contentDigest, type HeldContents, type JournalTable } from "./lowering/unit-journal.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
@@ -220,8 +220,10 @@ export const FETCH_AMBIENT_TYPES = [
   "ReadableStreamReadValueResult",
   "ReadableStreamReadDoneResult",
   "TransformStream",
+  "TransformStreamDefaultController",
   "WritableStream",
   "WritableStreamDefaultWriter",
+  "WritableStreamDefaultController",
   "Blob",
   "File",
   "BlobPropertyBag",
@@ -716,9 +718,39 @@ export class UnionRegistry {
    * the key its arms give. A unit that adds a recursive union changes
    * journalSizes, so the unions past a unit's start are interned ones. */
   journalTable(): JournalTable {
+    // The position of each union by id, for the unions indexed so far.
+    let indexes = new Map<string, number>();
+    let indexed = 0;
+    const indexOf = (id: string): number | undefined => {
+      if (indexed > this.unions.length) {
+        indexes = new Map();
+        indexed = 0;
+      }
+      for (; indexed < this.unions.length; indexed++)
+        indexes.set(this.unions[indexed]!.id, indexed);
+      const index = indexes.get(id);
+      return index !== undefined && this.unions[index]?.id === id ? index : undefined;
+    };
     return {
       name: "unions",
       size: () => this.unions.length,
+      digest: (key, before) => {
+        if (!this.byId.has(key)) return null;
+        let index = indexOf(key);
+        if (index === undefined) {
+          // A list that was cut and grown again holds other unions at the
+          // positions indexed before.
+          indexes = new Map();
+          indexed = 0;
+          index = indexOf(key);
+        }
+        if (index === undefined || index >= before) return null;
+        return contentDigest(JSON.stringify(this.unions[index]!));
+      },
+      holds: (entry) => {
+        const def = JSON.parse(entry) as IrUnionDef;
+        return this.byKey.has(unionKey(def.arms, def.discriminant));
+      },
       entries: (from) => {
         const out: string[] = [];
         for (const def of this.unions.slice(from)) {
@@ -729,6 +761,12 @@ export class UnionRegistry {
         }
         return out;
       },
+      agrees: (entries) =>
+        entries.every((entry) => {
+          const def = JSON.parse(entry) as IrUnionDef;
+          const held = this.byKey.get(unionKey(def.arms, def.discriminant));
+          return held === undefined ? !this.byId.has(def.id) : held === def.id;
+        }),
       apply: (entries) => {
         for (const entry of entries) {
           const def = JSON.parse(entry) as IrUnionDef;
@@ -1369,6 +1407,11 @@ export type TypeParamTsResolver = (t: ts.Type) => ts.Type | null;
  * once per Lowerer and threaded through the recursion — adding a hook means
  * one new field here, not a new parameter at every call site. */
 export interface TypeMapperCtx {
+  /** Whether the program creates primitive wrapper objects
+   * (primitive-wrappers.ts): then the boxed interface types (`String`,
+   * `Number`, `Boolean`) map to the checked-dynamic value instead of the
+   * primitive. Absent or false: every mapping is unchanged. */
+  primitiveWrappers?: () => boolean;
   /** Node islands (scope-B NI-4): whether a type's values are island
    * handles, which map to the `foreign` type (a dyn value). Absent in
    * programs without islands. */
@@ -2408,6 +2451,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         ts.symbolName(boxSym) === "Boolean") &&
       boxSym.declarations.some((d) => ctx.isStdlibFile(ts.getSourceFileOfNode(d)))
     ) {
+      // Once the program creates wrapper objects, a slot of the boxed type
+      // may hold one: the checked-dynamic value holds both.
+      if (ctx.primitiveWrappers?.()) return DYN;
       return ts.symbolName(boxSym) === "Number"
         ? F64
         : ts.symbolName(boxSym) === "String"
@@ -2817,7 +2863,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     }
   }
   const classView = mapClassView(widened, ctx);
-  if (classView !== undefined) return classView;
+  if (classView !== undefined) {
+    // An intersection of ONE compiled class instance with data-only object
+    // types is a class instance carrying expando properties
+    // (`Box & { preview?: Preview }`): the class owns the instance's
+    // storage and the other members are properties the instance carries at
+    // run time, so the class view has no single layout to answer (null).
+    // The checked-dynamic representation IS that object model — one object,
+    // the instance's identity and prototype, class fields reading and
+    // writing through the live view, extra members in its property table.
+    if (classView === null && widened.isIntersectionType()) {
+      const expando = mapClassExpandoIntersection(widened, ctx);
+      if (expando) return expando;
+    }
+    return classView;
+  }
   // Class instances name a program class. The same symbol with construct
   // signatures names its static side, mapped to classval below.
   const widenedSym = widened.getSymbol();
@@ -4469,6 +4529,43 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  // child_process.SpawnSyncOptionsWithStringEncoding: the spawnSync twin of
+  // the exec-options record above, interned explicitly for the same
+  // reason — a typed const or a runner function's options parameter is a
+  // runtime record the spawnSync lowering reads member by member. The
+  // members are the ones it honestly implements: encoding (required — the
+  // "WithStringEncoding" refinement), cwd/input/timeout/shell/stdio (a
+  // runtime array is string[]; unsupported runtime modes throw at the
+  // call), and the accepted-but-inert windowsHide. env and killSignal
+  // stay literal-only, so their presence keeps the shape unmatched and
+  // their literals fence at the shape check instead of being dropped.
+  if (isStdlibInterface("SpawnSyncOptionsWithStringEncoding")) {
+    const optStr = withUndefinedArm(STRING, ctx.unions);
+    const optNum = withUndefinedArm(F64, ctx.unions);
+    const optBool = withUndefinedArm(BOOL, ctx.unions);
+    const stdioArms = [arrayOf(STRING), STRING, UNDEFINED_T].sort((a, b) =>
+      typeKey(a) < typeKey(b) ? -1 : 1,
+    );
+    const stdio: IrType = { kind: "union", unionId: ctx.unions.intern(stdioArms) };
+    if (!optStr || !optNum || !optBool) return null;
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "cwd", type: optStr },
+          { name: "encoding", type: STRING },
+          { name: "input", type: optStr },
+          { name: "shell", type: optBool },
+          { name: "stdio", type: stdio },
+          { name: "timeout", type: optNum },
+          { name: "windowsHide", type: optBool },
+        ],
+        false,
+        undefined,
+        ["encoding", "cwd", "input", "timeout", "shell", "stdio", "windowsHide"],
+      ),
+    };
+  }
   if (isStdlibInterface("AddressInfo")) {
     return {
       kind: "record",
@@ -5151,6 +5248,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // AsyncLocalStorage.snapshot()'s generic runner is a dyn function value
   // (als.snapshot), called through the dyn call path.
   if (callSigs.length === 1 && isAsyncLocalStorageSnapshot(callSigs[0]!, ctx)) return DYN;
+  // A process/net/stream `write` method taken as a value (`typeof
+  // process.stdout.write`, the saved original of an output guard): its
+  // overload set has no single compiled signature, and the value is the
+  // stream's replaceable method slot, so it is the checked-dynamic function
+  // the stream object hands out (scr_events.c ProcessStream).
+  if (callSigs.length > 1 && isStdlibStreamWriteOverloads(callSigs, ctx)) return DYN;
   if (callSigs.length === 1) return mapCallSignature(callSigs[0]!, ctx);
   // Records: object types whose members are all data properties (shorthand
   // methods in type position count — they're func-typed fields) with
@@ -5469,6 +5572,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ) {
         return DYN;
       }
+      // A module namespace beside another value in one slot (`[path.posix,
+      // path.win32]`, a `['posix', path.posix]` table row): a namespace has
+      // no union representation, and as a value it is the runtime's module
+      // object, so the slot is checked-dynamic. A namespace or null keeps
+      // its union (a probed process.getBuiltinModule result).
+      if (
+        arms.some((a) => a.kind === "moduleNs") &&
+        arms.filter((a) => !isUnitType(a)).length > 1 &&
+        !unions.recursivePending(widened)
+      ) {
+        return DYN;
+      }
       // SEVERAL PROMISE ARMS are ONE: `Promise<A> | Promise<B>` is
       // `Promise<A | B>`. A promise arm's tag IS the `instanceof Promise`
       // test, so JavaScript cannot tell the arms apart at run time (both
@@ -5551,6 +5666,36 @@ function isAsyncLocalStorageSnapshot(sig: ts.Signature, ctx: TypeMapperCtx): boo
     ctx.isStdlibFile(ts.getSourceFileOfNode(decl)) &&
     isDeclaredInAmbientModule(decl, "async_hooks")
   );
+}
+
+const STREAM_WRITE_OWNERS = new Set(["Socket", "Writable", "WriteStream", "WritableStream"]);
+
+/** Every signature is a `write` method declared on a standard-library
+ * stream interface or class (net.Socket, stream.Writable, tty.WriteStream,
+ * NodeJS.WritableStream) — @types/node's or the fallback declarations'. */
+function isStdlibStreamWriteOverloads(
+  sigs: readonly ts.Signature[],
+  ctx: Pick<TypeMapperCtx, "isStdlibFile">,
+): boolean {
+  return sigs.every((sig) => {
+    const decl = sig.declaration;
+    if (
+      decl === undefined ||
+      !(ts.isMethodSignatureDeclaration(decl) || ts.isMethodDeclaration(decl))
+    )
+      return false;
+    if (!ts.isIdentifier(decl.name) || decl.name.text !== "write") return false;
+    const owner = decl.parent;
+    const ownerName =
+      owner !== undefined && (ts.isInterfaceDeclaration(owner) || ts.isClassDeclaration(owner))
+        ? (owner.name?.text ?? null)
+        : null;
+    return (
+      ownerName !== null &&
+      STREAM_WRITE_OWNERS.has(ownerName) &&
+      ctx.isStdlibFile(ts.getSourceFileOfNode(decl))
+    );
+  });
 }
 
 function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null {
@@ -7327,6 +7472,52 @@ function mapEqualConstituentsIntersection(widened: ts.Type, ctx: TypeMapperCtx):
     else if (!typeEquals(same, mapped)) return null;
   }
   return same;
+}
+
+/** A CLASS INSTANCE carrying expando properties
+ * (`Box & { preview?: Preview }`): one compiled class constituent and
+ * data-only object constituents that are not part of the class's own
+ * storage. It has no native layout — the class owns the struct and the
+ * other constituents are properties the instance carries at run time —
+ * and the checked-dynamic representation IS that object model: the value
+ * is the instance (identity, prototype, method dispatch), the class fields
+ * read and write through the live view in both directions, and the expando
+ * members live in its property table. Every other intersection keeps its
+ * existing treatment: reached only where the class view found extra
+ * members, and refusing everything that is not one class plus data. */
+function mapClassExpandoIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const { checker } = ctx;
+  if (checker.getConstructSignatures(widened).length > 0) return null;
+  let classPart: ts.Type | null = null;
+  const expandoParts: ts.Type[] = [];
+  for (const part of ts.constituentTypes(widened)) {
+    const mapped = mapType(part, ctx);
+    if (mapped === null) return null;
+    if (mapped.kind === "object") {
+      if (classPart !== null) return null;
+      classPart = part;
+      continue;
+    }
+    // The expando members are DATA: a plain record, with no call or
+    // construct signature of its own.
+    if (mapped.kind !== "record") return null;
+    if (checker.getCallSignatures(part).length > 0) return null;
+    expandoParts.push(part);
+  }
+  if (classPart === null) return null;
+  // The expando members are properties the class does not declare. An
+  // index signature names every key, and a member the class declares
+  // restates the class's own storage: both refine the class's members
+  // rather than add to them, and keep their diagnostics.
+  const classMembers = new Set(
+    checker.getPropertiesOfType(classPart).map((member) => ts.symbolName(member)),
+  );
+  for (const part of expandoParts) {
+    if (checker.getIndexInfosOfType(part).length > 0) return null;
+    for (const member of checker.getPropertiesOfType(part))
+      if (classMembers.has(ts.symbolName(member))) return null;
+  }
+  return DYN;
 }
 
 function mapHybridCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {

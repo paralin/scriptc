@@ -357,6 +357,7 @@ export const DYNAMIC_TIER_PREFIXES = [
   "scr_dyn_call",
   "scr_dyn_apply",
   "scr_dyn_invoke",
+  "scr_dyn_stdlib_prototype",
   "scr_dyn_array_like",
   "scr_dyn_builtin_prototype",
   "scr_dyn_construct",
@@ -395,6 +396,42 @@ export function dynamicTierSymbols(names) {
  * program without a call into Node.js may define any of these. */
 export const NODE_ISLAND_PREFIXES = ["scr_node_island", "scr_loop_set_node_island"];
 
+/** The namespace ICU's own symbols live in after its version-suffixed
+ * renaming: `icu_78`, which Itanium mangling spells `6icu_78`. */
+export const ICU_CPP_NAMESPACE = "6icu_78";
+
+/** The ICU archive: no program that answers its Intl forms without
+ * ICU — that is, every program whose IR has no `icu.*` libCall — may define
+ * a symbol from it. The test is exact because ICU builds with symbol
+ * renaming on: every C API symbol carries the `_78` version suffix
+ * (`ubrk_open_78`), its data symbol is `icudt78_dat`, and every C++ symbol
+ * is an Itanium mangling that names namespace `icu_78`, which the mangling
+ * spells `6icu_78` wherever the name occurs — as the function's own
+ * namespace (`_ZN6icu_78...`), in its parameter types, in vtables, typeinfo
+ * and guard variables, or in a libc++ instantiation over an ICU type. No
+ * symbol outside the archive carries either mark, except emitted program
+ * functions (`sc_` names), whose numbered helpers can end in `_78`
+ * (`sc_f__x25_dyn_class_property_78`); the suffix test skips them.
+ *
+ * scr_intl.c's own functions are deliberately not tested by name. The
+ * engine-free Intl paths share their prefix (`scr_intl_num_format_en_us` in
+ * scr_lib.c, `scr_intl_segmenter_new` in scr_grapheme.c), and they must stay
+ * linkable without ICU (I4). Any scr_intl.c function that does link brings an
+ * ICU symbol with it, which the test catches. The C++ standard library
+ * merged into the archive cannot leak on its own either: an archive
+ * contributes a member only when something references it, and only ICU's
+ * objects reference libc++. */
+export function icuSymbols(names) {
+  return [...new Set(names)]
+    .filter(
+      (name) =>
+        (name.endsWith("_78") && !name.startsWith("sc_")) ||
+        name.includes(ICU_CPP_NAMESPACE) ||
+        name.startsWith("icudt78"),
+    )
+    .sort();
+}
+
 /** The Node island symbols among `names`, sorted. */
 export function nodeIslandSymbols(names) {
   return [...new Set(names)]
@@ -418,7 +455,9 @@ export function nodeIslandSymbols(names) {
  * and results the checker types `any`. bench/record-untyped-writes, also
  * added later, writes typed records through `unknown` and `Object.assign`
  * views. bench/layered-errors, also added later, constructs and throws
- * Error subclass instances, as bench/validate-errors does. Every other bench
+ * Error subclass instances, as bench/validate-errors does.
+ * bench/stream-buffered-drain, also added later, drains an object-mode
+ * Readable, whose chunks are checked-dynamic values. Every other bench
  * workload is fully typed and must link none. The gate and
  * tests/harness/bench-dynamic-tier.test.ts enforce that, and the test also
  * fails when a listed workload stops linking them, so remove a workload here
@@ -445,6 +484,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/regex-replacers",
   "bench/record-untyped-writes",
   "bench/layered-errors",
+  "bench/stream-buffered-drain",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O
@@ -510,7 +550,8 @@ export function compareCounts(baseline, candidate) {
 /* ── runtime packs ─────────────────────────────────────────────────────── */
 
 /** Every file a runtime-pack.json lists (each flavor's runtime unit
- * variants, their bitcode, and the vendor archives), as path → sha256. */
+ * variants and the vendor archives, and the bitcode packs built before
+ * 0.4.7 listed), as path → sha256. */
 export function runtimePackFiles(manifest) {
   const files = new Map();
   const visit = (value) => {
@@ -547,20 +588,36 @@ export function linkedRuntimeFiles(diff) {
   );
 }
 
-/** Defined functions of textual LLVM IR (llvm-dis output) as name → hash of
- * the body. Attribute group and metadata numbers are dropped first, since
- * an unrelated change elsewhere in the unit renumbers them. */
-export function llvmFunctionHashes(text) {
+/** Functions of an object's disassembly (llvm-objdump -d -r
+ * --no-show-raw-insn --no-leading-addr) as name → hash of the body. Branch
+ * targets and relocations keep their symbol and offset but drop addresses,
+ * so a function that only moved within its section is not a change. */
+export function objectFunctionHashes(text) {
   const functions = new Map();
-  const lines = text.split("\n");
-  for (let index = 0; index < lines.length; index++) {
-    const head = /^define\b[^@]*@("(?:[^"\\]|\\.)*"|[\w.$-]+)\(/.exec(lines[index]);
-    if (head === null) continue;
-    const body = [];
-    for (; index < lines.length && lines[index] !== "}"; index++) body.push(lines[index]);
-    const normalized = body.join("\n").replace(/ #\d+/g, "").replace(/!\d+/g, "!");
-    functions.set(head[1].replace(/^"|"$/g, ""), hash(normalized));
+  let name = null;
+  let body = [];
+  const flush = () => {
+    if (name !== null) functions.set(name, hash(body.join("\n")));
+    name = null;
+    body = [];
+  };
+  for (const line of text.split("\n")) {
+    const head = /^(?:[0-9a-f]+ )?<(.+)>:$/.exec(line.trim());
+    if (head !== null) {
+      flush();
+      name = head[1];
+    } else if (line.trim() === "" || line.startsWith("Disassembly of section")) {
+      flush();
+    } else if (name !== null) {
+      body.push(
+        line
+          .trim()
+          .replace(/^[0-9a-f]+:\s+/, "")
+          .replace(/\b(?:0x)?[0-9a-f]+ <([^>]+)>/g, "<$1>"),
+      );
+    }
   }
+  flush();
   return functions;
 }
 
@@ -754,6 +811,7 @@ export function timingGroups(rows) {
   return {
     bench: rows.filter((r) => r.id.startsWith("bench/")),
     self: rows.filter((r) => r.id === "self/cli"),
+    fixtures: rows.filter((r) => r.id.startsWith("fixture/")),
   };
 }
 

@@ -64,7 +64,16 @@ export function lowerArrayCallback(
   arrT: IrType,
   bindUntyped = false,
   expectedReturn?: IrType,
-): { fnArg: IrExpr & { type: IrType & { kind: "func" } }; arity: number; unread: boolean } {
+): {
+  fnArg: IrExpr & { type: IrType & { kind: "func" } };
+  arity: number;
+  unread: boolean;
+  /** The lowered callback's own type, before any slot adaptation below. A
+   * caller that synthesizes the call itself needs the unadapted ABI: a JS
+   * function whose `arguments` slot is its ABI ({params: [], rest: true})
+   * is adapted to the visible slot here, losing that fact. */
+  rawType: IrType;
+} {
   // `xs.map(((x) => x))`: a parenthesized callback is the function itself.
   while (ts.isParenthesizedExpression(argNode)) argNode = argNode.expression;
   // The ambient `Boolean` as the callback (`flags.every(Boolean)`,
@@ -83,11 +92,8 @@ export function lowerArrayCallback(
     if (valueT === undefined || valueT.kind === "void" || isUnitType(valueT))
       lowerer.badType(argNode, lowerer.typeOf(argNode));
     if (valueT.kind === "union") lowerer.requireTruthyUnion(valueT.unionId, argNode);
-    return {
-      fnArg: truthyFilterCallback(lowerer, valueT, locOf(argNode)),
-      arity: 1,
-      unread: false,
-    };
+    const truthy = truthyFilterCallback(lowerer, valueT, locOf(argNode));
+    return { fnArg: truthy, arity: 1, unread: false, rawType: truthy.type };
   }
   // The ambient `String` (`values.map(String)`): String(value) converts its
   // first argument as a direct call does, whatever the element type; the
@@ -101,7 +107,8 @@ export function lowerArrayCallback(
     const valueT = lead[0];
     if (valueT === undefined || valueT.kind === "void")
       lowerer.badType(argNode, lowerer.typeOf(argNode));
-    return { fnArg: stringConversionCallback(lowerer, valueT, argNode), arity: 1, unread: false };
+    const conversion = stringConversionCallback(lowerer, valueT, argNode);
+    return { fnArg: conversion, arity: 1, unread: false, rawType: conversion.type };
   }
   const full = [...lead, F64, arrT];
   // A DYN-receiver HOF's callback (`parsed.flatMap((value) => ...)`):
@@ -246,6 +253,7 @@ export function lowerArrayCallback(
     if (previousReturn === undefined) lowerer.contextualFunctionReturns.delete(argNode);
     else lowerer.contextualFunctionReturns.set(argNode, previousReturn);
   }
+  const rawType = fnArg.type;
   // A callback can accept a wider parameter type than the array supplies
   // (a reusable predicate over a union is common). Its closure still has
   // that wider ABI: adapt each actual argument before invoking it, just
@@ -281,6 +289,25 @@ export function lowerArrayCallback(
       fnArg = lowerer.coerceToExpected(fnArg, callbackType);
     }
   }
+  // A DYN-receiver HOF whose callback declares NARROWER parameters than
+  // the dyn element the helper passes (`.filter((m): m is string => ...)`
+  // on `xs.map(...)` where the checker types the callback parameter
+  // `string | undefined` from the receiver's precise element while the
+  // receiver LOWERS to the checked-dynamic array): the callback is a
+  // value whose parameter types are the checker's proof of what the dyn
+  // element holds, so each argument crosses the checked-dynamic boundary
+  // into them with the usual checked conversion — a lying type throws,
+  // like any other checked extraction, instead of reading a mistyped
+  // value. Adapt the callback to the helper's ABI rather than refusing.
+  if (
+    fnArg.type.kind === "func" &&
+    fnArg.type.params.length <= full.length &&
+    !fnArg.type.params.every((p, i) => typeEquals(p, full[i]!)) &&
+    fnArg.type.params.every((p, i) => typeEquals(p, full[i]!) || full[i]!.kind === "dyn")
+  ) {
+    const func = fnArg.type as IrType & { kind: "func" };
+    fnArg = lowerer.coerceToExpected(fnArg, funcOf(full.slice(0, func.params.length), func.ret));
+  }
   if (
     fnArg.type.kind !== "func" ||
     fnArg.type.params.length > full.length ||
@@ -292,6 +319,7 @@ export function lowerArrayCallback(
     fnArg: fnArg as IrExpr & { type: IrType & { kind: "func" } },
     arity: fnArg.type.params.length,
     unread: !readsParameter(argNode, lead.length - 1),
+    rawType,
   };
 }
 
@@ -299,10 +327,12 @@ export function lowerArrayCallback(
  * function or arrow expression that declares no such parameter, or binds
  * it to a plain name that appears nowhere else in it (any identifier of
  * that name counts, including shorthand properties and shadowing
- * bindings). Any other callback may. */
+ * bindings). Any other callback may. `index` counts the callback's data
+ * parameters: an explicit `this` parameter is not one of them. */
 function readsParameter(argNode: ts.Expression, index: number): boolean {
   if (!ts.isArrowFunction(argNode) && !ts.isFunctionExpression(argNode)) return true;
-  const param = argNode.parameters.nodes[index];
+  const params = callbackDataParams(argNode);
+  const param = params[index];
   if (!param) return false;
   if (!ts.isIdentifier(param.name) || param.initializer || param.dotDotDotToken) return true;
   const name = param.name.text;
@@ -311,10 +341,43 @@ function readsParameter(argNode: ts.Expression, index: number): boolean {
       ts.isIdentifier(node) &&
       (node.text === name || node.text === "arguments")) ||
     (ts.forEachChild(node, (child) => (mentions(child) ? true : undefined)) ?? false);
-  return (
-    argNode.parameters.nodes.some((other) => other !== param && mentions(other)) ||
-    mentions(argNode.body)
-  );
+  return params.some((other) => other !== param && mentions(other)) || mentions(argNode.body);
+}
+
+/** The result array's element when it is the unit-only union (`undefined[]`,
+ * the sparse-literal/`Array.from(..., () => undefined)` shape): a callback
+ * that answers `undefined` stores a PRESENT unit element, so the producer
+ * gives the callback that union as its contextual return. The standalone
+ * `undefined` in return position otherwise maps to the void convention,
+ * whose answer is erased before it could be stored. Null for other elements. */
+export function unitOnlyArrayElement(lowerer: Lowerer, call: ts.CallExpression): IrType | null {
+  const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (result?.kind !== "array") return null;
+  const elem = result.elem;
+  if (isUnitType(elem)) return elem;
+  return elem.kind === "union" &&
+    lowerer.unions.get(elem.unionId)?.arms.every((arm) => isUnitType(arm)) === true
+    ? elem
+    : null;
+}
+
+/** Lower a callback whose answer becomes an array element, with the result
+ * element as its contextual return when that element is the unit-only union
+ * (see unitOnlyArrayElement). Other producers lower the callback directly. */
+export function lowerArrayCallbackAnswering(
+  lowerer: Lowerer,
+  fnNode: ts.Expression,
+  expected: IrType | null,
+): IrExpr {
+  if (expected === null) return lowerer.lowerExpr(fnNode);
+  const previous = lowerer.contextualFunctionReturns.get(fnNode);
+  lowerer.contextualFunctionReturns.set(fnNode, expected);
+  try {
+    return lowerer.lowerExpr(fnNode);
+  } finally {
+    if (previous === undefined) lowerer.contextualFunctionReturns.delete(fnNode);
+    else lowerer.contextualFunctionReturns.set(fnNode, previous);
+  }
 }
 
 /** Preserve the checker-selected payload ABI when a callback's runtime

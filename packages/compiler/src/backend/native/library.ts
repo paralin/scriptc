@@ -104,7 +104,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     // Zig's musl sysroot does not provide arc4random_buf. Keep the fallback
     // inside the archive so library embedders need no extra system library.
     ...(isMuslTarget(driver) ? ["scr_musl.c"] : []),
-    ...(regex ? ["scr_regex.c", "scr_glob.c"] : []),
+    ...(regex ? ["scr_regex.c", "scr_glob.c", "scr_path_win32_relative.c"] : []),
     ...(opts.assert || regex || opts.symbol ? ["scr_assert.c"] : []),
     ...(opts.inspect ? ["scr_inspect.c", "scr_console_native.c"] : []),
     ...(opts.symbol ? ["scr_symbol.c"] : []),
@@ -130,7 +130,6 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     "-DSCR_LIB",
     ...(opts.threadInstances ? ["-DSCR_THREAD_INSTANCES"] : []),
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
-    ...(opts.dynTier === true ? ["-DSCR_JS_TIER"] : []),
     "-I",
     rtDir,
     ...(regex ? ["-I", vendorEngineDir()] : []),

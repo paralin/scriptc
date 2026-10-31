@@ -103,6 +103,7 @@ const INERT_LIB_CALLS = new Set([
   "json.parse",
   "process.stderrWrite",
   "process.stdoutWrite",
+  "process.stdioWriteDyn",
   "process.envGet",
   "process.envPairs",
   "regex.groupEquals",
@@ -126,6 +127,8 @@ const INERT_LIB_CALLS = new Set([
   "worker.root",
   "cp.spawnSyncOpts",
   "cp.spawnSyncEnv",
+  "cp.spawnSyncExt",
+  "cp.spawnSyncExtEnv",
 ]);
 
 /** jsval conversions (ir/jsval.ts): no user code, no stores. */
