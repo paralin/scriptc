@@ -365,6 +365,48 @@ const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
   "valueOf",
 ]);
 
+/** Array.prototype's method names. A constant-key dynamic read of one on an array answers the method the array's implicit prototype installs, so the read links the dyn-invoke unit. Mirrors the method table in scr_dyn_invoke.c (runtime-registries.test.ts checks the two agree). */
+export const ARRAY_PROTOTYPE_MEMBER_NAMES: ReadonlySet<string> = new Set([
+  "at",
+  "concat",
+  "copyWithin",
+  "fill",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "lastIndexOf",
+  "pop",
+  "push",
+  "reverse",
+  "shift",
+  "unshift",
+  "slice",
+  "sort",
+  "splice",
+  "includes",
+  "indexOf",
+  "join",
+  "keys",
+  "entries",
+  "values",
+  "forEach",
+  "filter",
+  "flat",
+  "flatMap",
+  "map",
+  "every",
+  "some",
+  "reduce",
+  "reduceRight",
+  "toReversed",
+  "toSorted",
+  "toSpliced",
+  "with",
+  "toLocaleString",
+  "toString",
+]);
+
 /** Entry points that link the child-process unit (with CHILD_PROCESS_LIB_PREFIXES): the fork IPC channel on the process object. */
 const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.connected",
@@ -1146,13 +1188,15 @@ const RUNTIME_FEATURE_RULES = {
       "wrapper.new",
       "wrapper.toObject",
     ],
-    // Constant-key reads of Object.prototype member names answer the
-    // inherited member through scr_dyn_invoke.c.
+    // Constant-key reads of Object.prototype member names, and of
+    // Array.prototype method names on arrays, answer the inherited member
+    // through scr_dyn_invoke.c.
     expr: (node, _tables) =>
       node.kind === "dynInvoke" ||
       (node.kind === "dynKeyGet" &&
         node.key.kind === "strLit" &&
-        INHERITED_MEMBER_NAMES.has(node.key.value)),
+        (INHERITED_MEMBER_NAMES.has(node.key.value) ||
+          ARRAY_PROTOTYPE_MEMBER_NAMES.has(node.key.value))),
   }),
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */
