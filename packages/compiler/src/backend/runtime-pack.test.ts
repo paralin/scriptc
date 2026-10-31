@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import { snapshotNativeArtifactDependencies } from "./native-toolchain.js";
+import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import {
   effectiveRuntimeFeatures,
@@ -172,6 +173,29 @@ describe("runtime pack manifests", () => {
     expect(platformLinkerSupportsPersistentCache({ SDKROOT: "/mutable" })).toBe(false);
   });
 
+  test("a Linux driver in any prefix may publish, an unreachable one may not", async () => {
+    const toolDir = await mkdtemp(join(tmpdir(), "scriptc-linker-gate-"));
+    await writeFile(join(toolDir, "clang"), "#!/bin/sh\nexit 0\n");
+    await chmod(join(toolDir, "clang"), 0o755);
+    const env = { PATH: toolDir };
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "linux", defaultLinker: "clang" }),
+    ).toBe(true);
+    // A Darwin entry is only trusted from the system shim.
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "darwin", defaultLinker: "clang" }),
+    ).toBe(false);
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "win32", defaultLinker: "clang" }),
+    ).toBe(false);
+    expect(
+      platformLinkerSupportsPersistentCache(
+        { PATH: join(toolDir, "empty") },
+        { platform: "linux", defaultLinker: "clang" },
+      ),
+    ).toBe(false);
+  });
+
   test("the linker environment follows the effective clang behind a stable driver", async () => {
     const root = await mkdtemp(join(tmpdir(), "scriptc-linker-environment-"));
     const linker = join(root, "linker.mjs");
@@ -202,6 +226,23 @@ describe("runtime pack manifests", () => {
     });
     expect(second).not.toBe(first);
   });
+
+  test.skipIf(process.platform !== "linux")(
+    "the linker environment follows the ld.lld beside the driver",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "scriptc-linker-lld-"));
+      const driver = join(root, "clang");
+      await writeFile(driver, "#!/bin/sh\nexit 0\n");
+      await chmod(driver, 0o755);
+      // An explicit driver keeps the fingerprint free of its own identity
+      // probe, leaving the ld.lld lookup as the only difference.
+      const env = { SCRIPTC_LINKER: driver, PATH: root };
+      const before = await executableLinkerEnvironmentFingerprint(env);
+      await writeFile(join(root, "ld.lld"), "#!/bin/sh\nexit 0\n");
+      const after = await executableLinkerEnvironmentFingerprint(env);
+      expect(after).not.toBe(before);
+    },
+  );
 
   test("feature implications and predicates are deterministic", () => {
     const features = effectiveRuntimeFeatures({ ...BASE, fileHandle: true, fetch: true });
@@ -590,6 +631,70 @@ describe("runtime pack manifests", () => {
     expect(dependencyPaths).toEqual(
       expect.arrayContaining([platformLinker, sdkSettings, systemStub, compilerRuntime]),
     );
+  });
+
+  test("a Linux link proof covers the driver, the linker it selects and the pack", async () => {
+    const { root, packagePath } = await fixture(LINUX_X64_GNU_TARGET);
+    const programObject = join(root, "program.o");
+    const output = join(root, "program");
+    const driver = join(root, "clang.mjs");
+    const platformLinker = join(root, "toolchain", "ld");
+    const runtimeArtifact = join(root, "artifacts", "base.o");
+    await Promise.all([
+      mkdir(dirname(platformLinker), { recursive: true }),
+      writeFile(programObject, "program object"),
+    ]);
+    await Promise.all([
+      writeFile(platformLinker, "selected platform linker"),
+      writeFile(
+        driver,
+        [
+          "#!/usr/bin/env node",
+          'import { writeFileSync } from "node:fs";',
+          "const args = process.argv.slice(2);",
+          'const outputIndex = args.indexOf("-o");',
+          'if (args.includes("-print-prog-name=ld")) {',
+          `  process.stdout.write(${JSON.stringify(`${platformLinker}\n`)});`,
+          "  process.exit(0);",
+          "}",
+          'if (args.includes("-###")) {',
+          "  process.exit(0);",
+          "}",
+          'if (args.includes("-Wl,-t")) {',
+          '  writeFileSync(args[outputIndex + 1], "link trace output");',
+          "  process.exit(0);",
+          "}",
+          'writeFileSync(args[outputIndex + 1], "linked executable");',
+          "",
+        ].join("\n"),
+      ),
+    ]);
+    await chmod(driver, 0o755);
+    const plan = await createNativeLinkPlan({
+      target: LINUX_X64_GNU_TARGET,
+      programObject,
+      outPath: output,
+      features: BASE,
+      ffi: null,
+      optimization: "release",
+      resolver: () => packagePath,
+    });
+    let dependencies: Awaited<ReturnType<typeof snapshotNativeArtifactDependencies>> = [];
+
+    await linkNativeExecutable(plan, {
+      linker: driver,
+      onArtifactReady: async (artifact) => {
+        dependencies = artifact.dependencies;
+      },
+    });
+
+    expect(await readFile(output, "utf8")).toBe("linked executable");
+    const paths = dependencies.map((dependency) => dependency.path);
+    expect(paths).toEqual(expect.arrayContaining([driver, platformLinker, runtimeArtifact]));
+    expect(await nativeArtifactDependenciesStillMatch(dependencies)).toBe(true);
+    // A changed runtime pack invalidates the proof without touching the driver.
+    await writeFile(runtimeArtifact, "rebuilt runtime object");
+    expect(await nativeArtifactDependenciesStillMatch(dependencies)).toBe(false);
   });
 
   test("does not publish an executable cache proof when a dependency changes during linking", async () => {

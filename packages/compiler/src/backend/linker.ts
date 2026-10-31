@@ -27,7 +27,7 @@ import {
   type RuntimePackSelection,
 } from "./runtime-pack.js";
 import type { NativeLinkPlan } from "./link-plan.js";
-import { inputsWithoutLld, lldLinkerArgs } from "./lld.js";
+import { inputsWithoutLld, lldLinkerArgs, resolveCommandFile, resolvedLldFile } from "./lld.js";
 import { hugeTextLinkerArgs, rewriteHugeTextExecutable } from "./huge-text.js";
 import { systemLibraryLinkerArgs } from "./link-plan-core.js";
 import {
@@ -48,14 +48,23 @@ export function resolvePlatformLinker(
   return env["SCRIPTC_LINKER"] || defaultLinker;
 }
 
+/** A linker spelling resolved the way process spawning resolves it, with the
+ * file identity that distinguishes this executable from any replacement. */
+interface PlatformLinkerProgram {
+  /** Canonical path of the file a spawn of the spelling starts. */
+  readonly path: string;
+  /** Path and stat fields, joined; equal only for the same file generation. */
+  readonly identity: string;
+}
+
 /** Exact executable selected for a linker spelling.  The object-only route
  * must still invalidate an early executable when a new `clang` appears ahead
  * of an unchanged PATH entry; relying on the string "clang" would restore a
- * binary past a wrapper that injects link inputs. */
-function platformLinkerIdentity(
+ * binary it did not link. */
+function resolvePlatformLinkerProgram(
   env: NodeJS.ProcessEnv,
   linker: string = resolvePlatformLinker(env),
-): string {
+): PlatformLinkerProgram | null {
   const hasSeparator = linker.includes("/") || linker.includes("\\");
   const pathEntries = hasSeparator ? [""] : (env["PATH"] ?? "/usr/bin:/bin").split(delimiter);
   const extensions =
@@ -75,13 +84,25 @@ function platformLinkerIdentity(
         const canonical = realpathSync(candidate);
         const info = statSync(canonical);
         if (!info.isFile()) continue;
-        return [canonical, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs].join("\0");
+        return {
+          path: canonical,
+          identity: [canonical, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs].join(
+            "\0",
+          ),
+        };
       } catch {
         // Keep searching PATH exactly as process spawning does.
       }
     }
   }
-  return `<unresolved:${linker}>`;
+  return null;
+}
+
+function platformLinkerIdentity(
+  env: NodeJS.ProcessEnv,
+  linker: string = resolvePlatformLinker(env),
+): string {
+  return resolvePlatformLinkerProgram(env, linker)?.identity ?? `<unresolved:${linker}>`;
 }
 
 /** Cache-route identity for an object-only platform-link invocation.  The
@@ -114,13 +135,20 @@ export async function executableLinkerEnvironmentFingerprint(
         ? `<unavailable:${linker}:${randomUUID()}>`
         : `<unavailable:${linker}>`;
   }
+  // `-fuse-ld=lld` is chosen from the files around the driver, not from the
+  // environment: an ld.lld appearing or disappearing changes the link line
+  // while PATH and the driver file stay the same.
+  const lldIdentity =
+    process.platform === "linux" ? (resolvedLldFile(linker, env) ?? "<no-ld.lld>") : "<not-linux>";
   const hash = createHash("sha256")
-    .update("executable-linker-environment-v2\0")
+    .update("executable-linker-environment-v3\0")
     .update(toolchainEnvironmentFingerprint(env))
     .update("\0")
     .update(linkerIdentity)
     .update("\0")
     .update(effectiveDriverIdentity)
+    .update("\0")
+    .update(lldIdentity)
     .update("\0");
   for (const name of ["PATH", "SCRIPTC_TEST_RUNTIME_SRC_DIR"] as const) {
     const value = env[name];
@@ -134,21 +162,25 @@ export async function executableLinkerEnvironmentFingerprint(
 }
 
 /** Whether the object-only linker route can publish a whole executable cache
- * entry. The current proof machinery trusts only the direct default driver;
- * a caller-selected SCRIPTC_LINKER may be a wrapper with hidden inputs. */
+ * entry. A caller-selected SCRIPTC_LINKER may be a wrapper with hidden
+ * inputs, so only the environment's own driver is considered. */
 export function platformLinkerSupportsPersistentCache(
   env: NodeJS.ProcessEnv = process.env,
   target?: Pick<NativeLinkPlan["target"], "platform" | "defaultLinker">,
 ): boolean {
-  if (target !== undefined && target.platform !== "darwin") return false;
-  // The Apple system shim is a stable front door to the active SDK/linker;
-  // linkNativeExecutable snapshots the selected transitive inputs before it
-  // publishes the final cache entry. A PATH wrapper is intentionally opaque.
-  return (
-    env["SCRIPTC_LINKER"] === undefined &&
-    toolchainEnvironmentCachePolicy(env).completeArtifacts &&
-    platformLinkerIdentity(env).startsWith("/usr/bin/clang\0")
-  );
+  // The final cache entry is keyed on the driver's file identity and, before
+  // publication, linkNativeExecutable snapshots the driver, the linker it
+  // selects and every input the link opened. On Darwin that proof is only
+  // trusted for the Apple system shim, which is a stable front door to the
+  // active SDK. On Linux the driver may sit in any prefix and the proof
+  // covers it directly, so any resolved driver is accepted.
+  const platform = target?.platform ?? process.platform;
+  if (platform !== "darwin" && platform !== "linux") return false;
+  if (env["SCRIPTC_LINKER"] !== undefined) return false;
+  if (!toolchainEnvironmentCachePolicy(env).completeArtifacts) return false;
+  const program = resolvePlatformLinkerProgram(env);
+  if (program === null) return false;
+  return platform === "linux" || program.path.startsWith("/usr/bin/clang");
 }
 
 async function snapshotDependencies(paths: readonly string[]): Promise<NativeArtifactDependency[]> {
@@ -195,16 +227,24 @@ async function objectLinkerDependencyPaths(
   args: readonly string[],
   cwd: string,
   excludedRoots: readonly string[],
+  toolPaths: readonly string[],
 ): Promise<string[]> {
   const [reportedLinker, dryRun, trace] = await Promise.all([
     execFileAsync(linker, ["-print-prog-name=ld"], { cwd, maxBuffer: 16 * 1024 * 1024 }),
     execFileAsync(linker, [...args, "-###"], { cwd, maxBuffer: 32 * 1024 * 1024 }),
     execFileAsync(linker, [...args, "-Wl,-t"], { cwd, maxBuffer: 32 * 1024 * 1024 }),
   ]);
-  const paths = new Set<string>();
-  const add = async (candidate: string): Promise<void> => {
-    const path = resolve(cwd, candidate.trim());
-    if (path === "") return;
+  // The driver and the linker program it selects are link inputs that neither
+  // the dry run nor the trace lists.
+  const paths = new Set<string>(toolPaths);
+  const add = async (reported: string): Promise<void> => {
+    const candidate = reported.trim();
+    if (candidate === "") return;
+    // A bare program name is looked up on PATH exactly as the driver did.
+    const path = candidate.includes("/")
+      ? resolve(cwd, candidate)
+      : resolveCommandFile(candidate, process.env);
+    if (path === null) return;
     const info = await stat(path).catch(() => null);
     if (info?.isFile()) paths.add(path);
   };
@@ -301,6 +341,12 @@ export async function linkNativeExecutable(
       ];
     };
     const args = linkArgs(lld.length !== 0);
+    // The driver binary and the lld that `-fuse-ld=lld` selects are consumed
+    // outside the linker's own input list, so the proof names them directly.
+    const linkTools = [
+      resolveCommandFile(linker, process.env),
+      lld.length === 0 ? null : resolvedLldFile(linker, process.env),
+    ].filter((path): path is string => path !== null);
     // The pack snapshots bracket both verification passes and private staging;
     // the program-object snapshot begins before helper emission. Snapshot the
     // remaining cache-bearing inputs before the linker consumes them, then
@@ -319,11 +365,13 @@ export async function linkNativeExecutable(
       options.onArtifactReady === undefined ||
       !(await nativeArtifactDependenciesStillMatch(inheritedDependencies).catch(() => false))
         ? null
-        : await objectLinkerDependencyPaths(linker, args, privateOutRoot, [
+        : await objectLinkerDependencyPaths(
+            linker,
+            args,
             privateOutRoot,
-            staged.root,
-            ...plan.inputs,
-          ])
+            [privateOutRoot, staged.root, ...plan.inputs],
+            linkTools,
+          )
             .then(async (toolchain) => [
               ...inheritedDependencies,
               ...(await snapshotDependencies([...toolchain, ...additionalDependencyPaths])),

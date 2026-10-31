@@ -199,6 +199,108 @@ test.skipIf(process.platform === "win32")(
   120_000,
 );
 
+test.skipIf(process.platform === "win32")(
+  "replacing the driver file invalidates the stored executable",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-cli-executable-driver-"));
+    const toolDir = await mkdtemp(join(tmpdir(), "scriptc-cli-driver-path-"));
+    const cacheRoot = join(dir, "cache");
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "program");
+    const clang = join(toolDir, "clang");
+    // A wrapper that runs the real driver keeps the link working while the
+    // driver file it points at stays under this test's control.
+    const { stdout } = await execFileAsync("clang", ["-print-prog-name=clang"]);
+    const realClang = stdout.trim();
+    const path = `${toolDir}${delimiter}${process.env["PATH"] ?? ""}`;
+    const build = (): Promise<void> =>
+      execFileAsync(
+        process.execPath,
+        ["--import", tsxLoader, cliEntry, "build", entry, "-o", outPath],
+        {
+          env: { ...process.env, PATH: path, SCRIPTC_CACHE_DIR: cacheRoot },
+          maxBuffer: 4 * 1024 * 1024,
+        },
+      ).then(() => undefined);
+    const inode = async (): Promise<number> => (await stat(outPath)).ino;
+    try {
+      await mkdir(cacheRoot, { mode: 0o700 });
+      await writeFile(entry, 'console.log("driver");\n');
+      await writeFile(clang, `#!/bin/sh\nexec ${JSON.stringify(realClang)} "$@"\n`);
+      await chmod(clang, 0o755);
+
+      await build();
+      expect(await execFileAsync(outPath, [])).toMatchObject({ stdout: "driver\n" });
+      const first = await inode();
+
+      // The unchanged driver file restores the executable it linked.
+      await build();
+      expect(await inode()).toBe(first);
+
+      // A different file at the same spelling is a different link input.
+      await writeFile(
+        clang,
+        `#!/bin/sh\n# replaced driver\nexec ${JSON.stringify(realClang)} "$@"\n`,
+      );
+      await chmod(clang, 0o755);
+      await build();
+      expect(await inode()).not.toBe(first);
+      expect(await execFileAsync(outPath, [])).toMatchObject({ stdout: "driver\n" });
+
+      // The replacement's own entry then restores in turn.
+      const second = await inode();
+      await build();
+      expect(await inode()).toBe(second);
+    } finally {
+      await Promise.all([
+        rm(dir, { recursive: true, force: true }),
+        rm(toolDir, { recursive: true, force: true }),
+      ]);
+    }
+  },
+  240_000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "a restored Intl executable gets its data file back",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-cli-executable-intl-"));
+    const cacheRoot = join(dir, "cache");
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "program");
+    const dataFile = join(dir, "icudt78l.dat");
+    const build = async (): Promise<void> =>
+      execFileAsync(
+        process.execPath,
+        ["--import", tsxLoader, cliEntry, "build", entry, "-o", outPath],
+        {
+          env: { ...process.env, SCRIPTC_CACHE_DIR: cacheRoot },
+          maxBuffer: 4 * 1024 * 1024,
+        },
+      ).then(() => undefined);
+    const run = async (): Promise<string> =>
+      (await execFileAsync(outPath, [], { maxBuffer: 1024 * 1024 })).stdout;
+    try {
+      await mkdir(cacheRoot, { mode: 0o700 });
+      await writeFile(entry, "console.log((1234.5).toLocaleString());\n");
+      await build();
+      const first = await run();
+      expect(first.trim()).not.toBe("");
+      expect((await stat(dataFile)).size).toBeGreaterThan(0);
+
+      // The executable comes back from the cache, and the data file its Intl
+      // runtime reads must come back beside it.
+      await rm(dataFile);
+      await build();
+      expect(await run()).toBe(first);
+      expect((await stat(dataFile)).size).toBeGreaterThan(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  600_000,
+);
+
 test.skipIf(process.platform !== "linux")(
   "a warm executable cache still builds the heap census and writes the representation report",
   async () => {
