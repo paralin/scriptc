@@ -331,6 +331,13 @@ describe("runtime pack manifests", () => {
     });
     expect(evaluateRuntimePredicate({ all: ["fetch"], not: ["regex"] }, features)).toBe(true);
     expect(evaluateRuntimePredicate({ any: ["regex", "fileHandle"] }, features)).toBe(true);
+    // The JavaScript object model build implies the dynamic tier (t262-da
+    // §J): its code is the dynamic tier's, so a program with it links the
+    // dynamic-tier units too. A program without it keeps both off.
+    const objectModel = effectiveRuntimeFeatures({ ...BASE, jsObjectModel: true });
+    expect(objectModel).toMatchObject({ jsObjectModel: true, dynTier: true });
+    const plain = effectiveRuntimeFeatures(BASE);
+    expect(plain).toMatchObject({ jsObjectModel: false, dynTier: false });
   });
 
   test("static runtime-pack executable links dead-strip too", async () => {

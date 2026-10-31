@@ -1101,6 +1101,14 @@ function fsBufferBrandScan(mod: IrModule): RuleScan {
   };
 }
 
+/** The entries that need the JavaScript object model build (t262-da §J):
+ * the runtime code a JavaScript source reaches for builtin intrinsics,
+ * array attributes, BigInt views, handle property tables and buffer views
+ * that no typed program can observe. Empty until the first slice lands
+ * (A1 adds dyn.intrinsic); the slices share one SCR_JS_OBJECT_MODEL build
+ * of every unit they touch instead of one build column per feature. */
+export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]);
+
 /** One rule per runtime feature, sorted by name. A new feature is an
  * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
  * and its early exit derive from this table. The lists above keep one
@@ -1454,6 +1462,13 @@ const RUNTIME_FEATURE_RULES = {
     prefixes: ["insp.", "console.", "test."],
     libCall: (node) => node.fn === "rl.terminal" && !isDynUndefined(node.args[3]!),
   }),
+  /** The JavaScript object model build (t262-da §J): every runtime feature
+   * only a JavaScript source reaches shares one SCR_JS_OBJECT_MODEL build
+   * of the units it touches, so a program with one of them selects that
+   * build rather than a variant column of its own. The program has no
+   * typed-to-dynamic bridge of its own to lose: jsObjectModel implies
+   * dynTier. */
+  jsObjectModel: rule({ fns: [...JS_OBJECT_MODEL_LIB_FNS] }),
   legacyTextDecoder: rule({
     fns: [...LEGACY_TEXT_DECODER_LIB_FNS],
     expr: (node, tables) =>
@@ -1703,6 +1718,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     http: false,
     icu: false,
     inspect: false,
+    jsObjectModel: false,
     legacyTextDecoder: false,
     mime: false,
     webStreams: false,

@@ -468,6 +468,11 @@ const RUNTIME_DEFINES: readonly {
   // scr_json.c's view slot answers NULL for a field a partial record view
   // does not have; only a program with a partial assertion selects it.
   { define: "SCR_RECORD_VIEW_PARTIAL", when: (opts) => opts.recordViewPartial },
+  // The JavaScript object model build (t262-da §J): the code the runtime
+  // features only a JavaScript source reaches share. Its objects are separate
+  // builds selected by runtime-pack-matrix.mjs, so the source build must name
+  // the same builds.
+  { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
   // The wave's prepend registrations and stdin.isRaw (scr_events.c,
   // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form
