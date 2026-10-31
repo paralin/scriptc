@@ -2634,6 +2634,21 @@ export class Lowerer {
    * lowering and resolved by checkGenericIdentityPins only when some
    * generic declaration is held at more than one signature. */
   readonly dynIdentityComparisons: { node: ts.Node; left: ts.Node; right: ts.Node }[] = [];
+  /** The value instance each pinned binding holds (`const f: Fn = ident`),
+   * keyed by the binding's declaration: two pins of one generic
+   * declaration at different signatures are separate compiled closures, so
+   * checkGenericIdentityPins refuses to compare them. */
+  readonly pinnedValueInstances = new Map<ts.Node, { info: GenericFnInfo; instance: string }>();
+  /** Function-vs-function identity comparisons recorded while lowering,
+   * with the closure name each operand lowered to when it is a closure
+   * (an inline instantiation expression names its instance directly). */
+  readonly pinnedIdentityComparisons: {
+    node: ts.Node;
+    left: ts.Node;
+    right: ts.Node;
+    leftInstance: string | undefined;
+    rightInstance: string | undefined;
+  }[] = [];
   /** The identity comparison check reports once, after all lowering. */
   genericIdentityCheckDone = false;
   /** Function expressions lowered against a fixed target signature with a
@@ -4386,6 +4401,11 @@ export class Lowerer {
       checkedTable("erasingLambdas", () => this.erasingLambdas.size),
       checkedTable("genericIdentityPins", () => this.genericIdentityPins.length),
       checkedTable("dynIdentityComparisons", () => this.dynIdentityComparisons.length),
+      // Pinned binding instances and function-vs-function identity
+      // comparisons feed the same end-of-lowering check; a unit that records
+      // one lowers again rather than replaying a record without it.
+      checkedTable("pinnedValueInstances", () => this.pinnedValueInstances.size),
+      checkedTable("pinnedIdentityComparisons", () => this.pinnedIdentityComparisons.length),
       checkedTable("typedArgumentsLambdas", () => this.typedArgumentsLambdas.size),
       checkedTable("tupleAliasSymbols", () => this.tupleAliasSymbols.size),
       checkedTable("nullishFuncResults", () => this.nullishFuncResults.size),
