@@ -1161,8 +1161,9 @@ static ScrStr *scr_insp_data_view(const ScrBytes *b, double recurse, double dept
 
 static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth);
 /* The stack-aware renderer behind scr_insp_dyn_error: a caller that holds
- * the error natively passes its formatted stack (`given`), which the
- * materialized view's shared accessor cannot resolve on its own, and the
+ * the error natively passes its formatted stack (`given`), which stands in
+ * only when the view's shared `stack` accessor cannot resolve the error on
+ * its own (a field-built view or a materialized snapshot), and the
  * constructor name (`display_name`) the view no longer carries. */
 static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError *owner,
                               const ScrStr *stack, bool given, const char *display_name);
@@ -1513,21 +1514,10 @@ static const ScrDynProp *insp_error_hidden_entry(const ScrDyn *d, const char *ke
   return out->enumerable ? NULL : out;
 }
 
-static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
-  return insp_dyn_error(d, recurse, depth, NULL, NULL, false, NULL);
-}
-
-static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError *owner,
-                              const ScrStr *stack, bool given, const char *display_name) {
-  /* An error already on the traversal stack (a spawnSync error's own
-   * `error`): Node's [Circular *N], and <ref *N> on the outer rendering. */
-  double circular = scr_insp_circ_check(d);
-  if (circular != 0) return scr_insp_circular(circular);
-  const ScrDyn *name = insp_error_slot(d, "name", 4);
-  const ScrDyn *message = insp_error_slot(d, "message", 7);
-  bool assertion = name != NULL && name->v.str->len == 14 &&
-                   memcmp(name->v.str->data, "AssertionError", 14) == 0;
-  double value_depth = assertion ? recurse : depth;
+/* How many properties formatError prints after the stack: the enumerable
+ * own properties other than name, message and stack, plus a non-enumerable
+ * `cause` and an `errors` array (AggregateError's). */
+static size_t insp_error_extra(const ScrDyn *d) {
   size_t extra = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
@@ -1538,19 +1528,32 @@ static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError 
       continue;
     extra++;
   }
-  /* formatError shows a non-enumerable `cause`, and an AggregateError's
-   * `errors` array, after the enumerable keys: `[cause]`, `[errors]`. */
   ScrDynProp cause_prop, errors_prop;
   const ScrDynProp *cause = insp_error_hidden_entry(d, "cause", 5, &cause_prop);
   const ScrDynProp *errors = insp_error_hidden_entry(d, "errors", 6, &errors_prop);
   if (errors && errors->value->kind != SCR_DYN_ARR) errors = NULL;
-  extra += (cause != NULL) + (errors != NULL);
+  return extra + (cause != NULL) + (errors != NULL);
+}
+
+static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
+  return insp_dyn_error(d, recurse, depth, NULL, NULL, false, NULL);
+}
+
+static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError *owner,
+                              const ScrStr *stack, bool given, const char *display_name) {
+  /* An error already on the traversal stack (a spawnSync error's own
+   * `error`): Node's [Circular *N], and <ref *N> on the outer rendering. */
+  double circular = scr_insp_circ_check(d);
+  if (circular != 0) return scr_insp_circular(circular);
+  /* The depth answer is decided before any stack getter runs, as Node's
+   * is; its [Name] form names the `name` the error reads then. */
+  const ScrDyn *depth_name = insp_error_slot(d, "name", 4);
+  size_t extra = insp_error_extra(d);
   if (extra > 0 && recurse > depth) {
-    /* `[${getCtxStyle(...)}]` with the trailing space sliced: [Name] —
-     * before any stack getter runs, as Node's depth answer is. */
+    /* `[${getCtxStyle(...)}]` with the trailing space sliced: [Name] */
     InspBuf out = {0};
     ib_char(&out, '[');
-    if (name != NULL) ib_str(&out, name->v.str);
+    if (depth_name != NULL) ib_str(&out, depth_name->v.str);
     else ib_cstr(&out, "Error");
     ib_char(&out, ']');
     return ib_take(&out);
@@ -1567,30 +1570,68 @@ static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError 
   if (class_name == NULL) class_name = insp_tag_class_name(d);
   const char *native_class =
       class_name == NULL && owner != NULL ? insp_error_class_name(owner) : NULL;
+  /* Node's formatError reads the error's stack first, and a `stack` getter
+   * runs ordinary program code: every property read below happens after
+   * it, so a getter that replaces `name`, `message`, `cause` or `errors`
+   * leaves no borrowed entry behind. */
   ScrStr *owned_stack = NULL;
-  if (!given) {
+  {
     bool pending = scr_exc_pending();
     owned_stack = scr_error_dyn_stack_text(d);
+    bool threw = !pending && scr_exc_pending();
     insp_swallow_new_exc(pending);
+    /* The shared accessor resolves its error through the identity cache,
+     * which names a cached error view but not a field-built view or a
+     * materialized snapshot: there the error's own formatted stack stands
+     * in. A replaced member (a data property, a program getter, a deleted
+     * one) is what the program reads, so nothing stands in for it. */
+    if (owned_stack == NULL && !threw && given && stack != NULL &&
+        scr_error_dyn_stack_shared(d))
+      owned_stack = scr_str_retain((ScrStr *)stack);
   }
-  const ScrStr *text = given ? stack : owned_stack;
+  /* Node reads the error's `name` and `message` after its stack, and a
+   * compiled write updates the error's native slots rather than the view
+   * that mirrors them: a view with an error behind it reads the slots for
+   * the properties the error owns, and the view for the inherited ones. */
+  ScrStr *name_text = NULL;
+  ScrStr *message_text = NULL;
+  if (owner != NULL && owner->name_present && owner->name != NULL) {
+    name_text = scr_str_retain(owner->name);
+  } else {
+    const ScrDyn *slot = insp_error_slot(d, "name", 4);
+    if (slot != NULL) name_text = scr_str_retain(slot->v.str);
+  }
+  if (owner != NULL && owner->message_present && owner->message != NULL) {
+    message_text = scr_str_retain(owner->message);
+  } else {
+    const ScrDyn *slot = insp_error_slot(d, "message", 7);
+    if (slot != NULL) message_text = scr_str_retain(slot->v.str);
+  }
+  bool assertion = name_text != NULL && name_text->len == 14 &&
+                   memcmp(name_text->data, "AssertionError", 14) == 0;
+  double value_depth = assertion ? recurse : depth;
+  /* Node snapshots the error's keys before formatError reads the stack, so
+   * a key a `stack` getter adds does not print: the count decided above,
+   * before the getter ran, is what the tail renders. */
+  size_t shown = extra;
+  const ScrStr *text = owned_stack;
   /* getStackString's fallback: Error.prototype.toString from the slots. */
   ScrStr *slots = NULL;
   if (text == NULL || text->len == 0) {
     InspBuf flat = {0};
-    if (name != NULL) ib_str(&flat, name->v.str);
+    if (name_text != NULL) ib_str(&flat, name_text);
     else ib_cstr(&flat, "Error");
-    if (message != NULL && message->v.str->len) {
+    if (message_text != NULL && message_text->len) {
       ib_cstr(&flat, ": ");
-      ib_str(&flat, message->v.str);
+      ib_str(&flat, message_text);
     }
     slots = ib_take(&flat);
     text = slots;
   }
   const char *display = class_name != NULL ? class_name : native_class;
   /* err.name, with formatError's `name ??= 'Error'`. */
-  const char *name_data = name != NULL ? name->v.str->data : "Error";
-  size_t name_len = name != NULL ? name->v.str->len : 5;
+  const char *name_data = name_text != NULL ? name_text->data : "Error";
+  size_t name_len = name_text != NULL ? name_text->len : 5;
   ScrStr *improved = display != NULL
       ? insp_improve_stack(text, name_data, name_len, display, strlen(display))
       : scr_str_retain((ScrStr *)text);
@@ -1603,10 +1644,25 @@ static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError 
   }
   scr_str_release(improved);
   scr_str_release(slots);
+  scr_str_release(name_text);
+  scr_str_release(message_text);
   scr_str_release(owned_stack);
   scr_error_release(resolved);
   ScrStr *base_str = ib_take(&base);
-  if (extra == 0) return base_str;
+  if (shown == 0) return base_str;
+  /* The hidden entries are read after the stack getter, and their values
+   * are kept alive across the enumerable properties' rendering, which can
+   * run getters of its own. */
+  ScrDynProp cause_prop, errors_prop;
+  const ScrDynProp *cause = insp_error_hidden_entry(d, "cause", 5, &cause_prop);
+  const ScrDynProp *errors = insp_error_hidden_entry(d, "errors", 6, &errors_prop);
+  if (errors && errors->value->kind != SCR_DYN_ARR) errors = NULL;
+  ScrDyn *hidden_value[2] = {
+      cause ? scr_dyn_retain(cause->value) : NULL,
+      errors ? scr_dyn_retain(errors->value) : NULL};
+  ScrStr *hidden_key[2] = {
+      cause ? scr_str_new(cause->key, cause->key_len) : NULL,
+      errors ? scr_str_new(errors->key, errors->key_len) : NULL};
   scr_insp_begin(recurse + 1);
   scr_insp_seen_push(d);
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
@@ -1618,31 +1674,36 @@ static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError 
       continue;
     bool shortened = assertion && ((ent.key_len == 6 && memcmp(ent.key, "actual", 6) == 0) ||
                                    (ent.key_len == 8 && memcmp(ent.key, "expected", 8) == 0));
-    ScrDyn *shown = shortened ? insp_assertion_ellipsis(ent.value) : scr_dyn_retain(ent.value);
-    ScrStr *val = scr_insp_dyn(shown, recurse + 1, value_depth);
-    scr_dyn_release(shown);
+    ScrDyn *value = shortened ? insp_assertion_ellipsis(ent.value) : scr_dyn_retain(ent.value);
+    /* The key renders before the value, whose own getters can change this
+     * error's entries. */
     InspBuf eb = {0};
     insp_key_into(&eb, ent.key, ent.key_len);
     ib_cstr(&eb, ": ");
+    ScrStr *val = scr_insp_dyn(value, recurse + 1, value_depth);
+    scr_dyn_release(value);
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(val);
     ScrStr *entry = ib_take(&eb);
     scr_insp_entry(entry, false);
     scr_str_release(entry);
   }
-  const ScrDynProp *hidden[] = {cause, errors};
   for (size_t i = 0; i < 2; i++) {
-    if (!hidden[i]) continue;
-    ScrStr *val = scr_insp_dyn(hidden[i]->value, recurse + 1, value_depth);
+    if (!hidden_value[i]) continue;
+    ScrStr *val = scr_insp_dyn(hidden_value[i], recurse + 1, value_depth);
     InspBuf eb = {0};
     ib_char(&eb, '[');
-    ib_bytes(&eb, hidden[i]->key, hidden[i]->key_len);
+    ib_str(&eb, hidden_key[i]);
     ib_cstr(&eb, "]: ");
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(val);
     ScrStr *entry = ib_take(&eb);
     scr_insp_entry(entry, false);
     scr_str_release(entry);
+  }
+  for (size_t i = 0; i < 2; i++) {
+    scr_dyn_release(hidden_value[i]);
+    scr_str_release(hidden_key[i]);
   }
   ScrStr *b0 = scr_str_new("{", 1);
   ScrStr *b1 = scr_str_new("}", 1);

@@ -158,5 +158,35 @@ const carriedCleared: unknown = new Plain("cleared dyn");
 (carriedCleared as Error).stack = "";
 console.log("carried cleared", JSON.stringify(util.inspect(carriedCleared)));
 
+// The stack is read first, as formatError does, so a `stack` getter the
+// program installed is what renders — through a typed error and through an
+// unknown value alike — and the name and message reads that follow see what
+// the getter left behind.
+function defineStack(target: object, read: () => string | undefined): void {
+  Object.defineProperty(target, "stack", { get: read, configurable: true });
+}
+const replaced = new Error("replaced");
+defineStack(replaced, () => "stack from a getter");
+console.log("replaced typed", JSON.stringify(util.inspect(replaced)));
+const replacedCarried: unknown = replaced;
+console.log("replaced unknown", JSON.stringify(util.inspect(replacedCarried)));
+
+// A getter that rewrites the name heads the rendering the way the rewritten
+// name does (improveStack reads the new name), and a getter returning no
+// stack leaves the slots' form with the new message.
+const rewritten = new Error("before");
+defineStack(rewritten, () => {
+  rewritten.name = "TypeError";
+  rewritten.message = "after";
+  return "TypeError: after";
+});
+console.log("rewritten", JSON.stringify(util.inspect(rewritten)));
+const rewrittenSlots = new Error("before");
+defineStack(rewrittenSlots, () => {
+  rewrittenSlots.message = "after";
+  return undefined;
+});
+console.log("rewritten slots", JSON.stringify(util.inspect(rewrittenSlots)));
+
 // console.log renders the value the same way.
 console.log("console:", assigned);
