@@ -1027,6 +1027,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sym.for": "scr_sym_for",
   "sym.wellKnown": "scr_sym_well_known",
   "sym.toString": "scr_sym_to_string",
+  "sym.keyForDyn": "scr_dyn_symbol_key_for",
   "bigint.parse": "scr_bigint_parse",
   "bigint.fromF64": "scr_bigint_from_f64",
   "bigint.neg": "scr_bigint_neg",

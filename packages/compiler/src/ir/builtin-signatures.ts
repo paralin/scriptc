@@ -1078,6 +1078,9 @@ function buildLibFnSignatures() {
     "sym.keyFor": { argTypes: [SYMBOL_T], result: VOID },
     "sym.desc": { argTypes: [SYMBOL_T], result: VOID },
     "sym.toString": { argTypes: [SYMBOL_T], result: STRING },
+    /** Symbol.keyFor called through its function value: the key or
+     * undefined, or Node's TypeError for a value that is not a symbol. */
+    "sym.keyForDyn": { argTypes: [DYN], result: DYN },
     /** Engine-free arbitrary-precision bigint operations (scr_bigint.c).
      * parse accepts the ECMAScript BigInt string grammar; fromF64 accepts
      * finite integral Numbers. Arithmetic returns fresh immutable values.

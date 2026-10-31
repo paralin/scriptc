@@ -27,13 +27,14 @@ import {
 import { isJsSourceFile } from "../program.js";
 import { isStrictCode } from "./strict-mode.js";
 import type { Lowerer } from "./lowerer.js";
-import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
+import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
 import { builtinGlobalValue } from "./expressions/property-access.js";
 import { builtinNamespaceValue } from "./builtin-namespaces.js";
 import { uriFunctionValue } from "./expressions/identifiers.js";
 import { navigatorValue } from "./builtins/navigator.js";
 import { primitiveCtorClosure } from "./lower-exprs.js";
+import { globalFunctionValue, isUnloweredGlobal } from "./global-function-values.js";
 import {
   WEB_STREAM_CLASSES,
   programNamesWebStreamClass,
@@ -158,7 +159,12 @@ export function tsUntypedGlobalValue(
   name: string,
   loc: SrcLoc,
 ): IrExpr | null {
-  if (isJsSourceFile(ts.getSourceFileOfNode(node)) || UNTYPED_UNMODELED.has(name)) return null;
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(node)) ||
+    UNTYPED_UNMODELED.has(name) ||
+    isUnloweredGlobal(name)
+  )
+    return null;
   if (name === "String" || name === "Number" || name === "Boolean" || name === "BigInt")
     return null;
   if (!flowsIntoUntypedSlot(lowerer, node)) return null;
@@ -215,7 +221,7 @@ export function jsSpecialGlobalValue(lowerer: Lowerer, name: string, loc: SrcLoc
   if (name === "fetch") return { kind: "libCall", fn: "fetch.function", args: [], type: DYN, loc };
   if (name === "console")
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
-  return null;
+  return globalFunctionValue(lowerer, name, loc);
 }
 
 const URI_FUNCTIONS = new Set([
@@ -336,7 +342,12 @@ function declaredGlobalNames(lowerer: Lowerer, at: ts.Node): string[] {
   return lowerer.checker
     .getPropertiesOfType(lowerer.checker.getTypeOfSymbol(symbol))
     .map((property) => ts.symbolName(property))
-    .filter((name) => name !== TEMPORAL_GLOBAL && !RUNTIME_ANSWERED.has(name));
+    .filter(
+      (name) =>
+        name !== TEMPORAL_GLOBAL &&
+        !RUNTIME_ANSWERED.has(name) &&
+        !COMMONJS_MODULE_BINDINGS.has(name),
+    );
 }
 
 /** The names the program's lookup answers: every declared global when a
@@ -378,6 +389,14 @@ export function globalValuesInstall(lowerer: Lowerer, loc: SrcLoc): IrStmt {
             : null
           : jsGlobalValueByName(lowerer, global, loc, false);
       if (value === null) continue;
+      // A function boxed here has no source spelling to take its name from
+      // (the identifier read's rule): it takes the global's name, as
+      // `globalThis.String.name` is "String".
+      const boxed = lowerer.coerceToExpected(value, DYN);
+      const named: IrExpr =
+        boxed.kind === "dynFrom" && boxed.value.type.kind === "func" && boxed.fnName === undefined
+          ? { ...boxed, fnName: global }
+          : boxed;
       body.push({
         kind: "if",
         cond: {
@@ -388,7 +407,7 @@ export function globalValuesInstall(lowerer: Lowerer, loc: SrcLoc): IrStmt {
           type: { kind: "bool" },
           loc,
         },
-        then: [{ kind: "return", value: lowerer.coerceToExpected(value, DYN), loc }],
+        then: [{ kind: "return", value: named, loc }],
         else_: null,
         loc,
       });

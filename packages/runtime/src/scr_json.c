@@ -6032,6 +6032,7 @@ SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *a
 SCR_TL ScrDyn *(*scr_dyn_builtin_static_fn)(const ScrDyn *fn, const char *key, size_t key_len,
                                             bool descriptor) = NULL;
 SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table) = NULL;
+SCR_TL const char *(*scr_dyn_builtin_owner_fn)(const ScrDyn *fn) = NULL;
 ScrDyn *(*scr_bytes_buffer_constructor_fn)(void) = NULL;
 
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
@@ -6061,10 +6062,19 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
+  /* A compiled function that is not a constructor (an arrow function, a
+   * method, a builtin function value such as Symbol or Number.parseFloat)
+   * throws Node's TypeError. Native functions without a construction here
+   * keep the refusal. */
+  bool compiled = callee->kind == SCR_DYN_FUNC && !callee->v.fn.class_obj &&
+      !(callee->v.fn.sig && strncmp(callee->v.fn.sig, "native:", 7) == 0);
+  /* Symbol refuses construction itself, under its own name. */
+  const char *builtin = compiled && scr_dyn_builtin_owner_fn ? scr_dyn_builtin_owner_fn(callee) : NULL;
   ScrJsonBuf message;
   scr_jb_init(&message);
-  scr_jb_write(&message, what->data, what->len);
-  scr_jb_puts(&message, " is not a supported native constructor");
+  if (builtin && strcmp(builtin, "Symbol") == 0) scr_jb_puts(&message, builtin);
+  else scr_jb_write(&message, what->data, what->len);
+  scr_jb_puts(&message, compiled ? " is not a constructor" : " is not a supported native constructor");
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
   return NULL;
 }
