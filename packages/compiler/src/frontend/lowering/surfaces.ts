@@ -2010,6 +2010,16 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       isExternal: { fn: "util.typeIs", params: [DYN], result: BOOL },
     },
     buffer: {
+      // Node 24's deprecate(SlowBuffer): DEP0030 on the first call, then
+      // allocUnsafeSlow's validation and an unpooled Buffer.
+      SlowBuffer: {
+        fn: "buffer.slowBuffer",
+        params: [DYN],
+        result: BYTES_U8,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 1,
+        valueName: "deprecated",
+      },
       isAscii: { fn: "buffer.isAscii", params: [DYN], result: BOOL },
       isUtf8: { fn: "buffer.isUtf8", params: [DYN], result: BOOL },
       transcode: { fn: "buffer.transcode", params: [DYN, DYN, DYN], result: BYTES_U8 },
@@ -2230,6 +2240,8 @@ export const BUILTIN_MODULE_CONSTS: Record<
   worker_threads: { isMainThread: true, threadId: 0 },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
   punycode: { version: "2.1.0" },
+  // The largest Buffer length, the bound the allocation checks use.
+  buffer: { kMaxLength: 9007199254740991 },
   // zlib's module-level copies of its constants (every member outside
   // BROTLI_*, Node's own loop over zlib.constants).
   zlib: Object.fromEntries(

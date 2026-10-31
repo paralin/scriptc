@@ -3421,6 +3421,20 @@ function buildLibFnSignatures() {
     /** Buffer.byteLength as a function value: the encoding arrives at run time. */
     "buffer.byteLenValue": { argTypes: [DYN, DYN], result: F64 },
     "buffer.byteLenStr": { argTypes: [STRING, STRING], result: F64 },
+    /** A run-time Buffer encoding name, normalized the way the method's
+     * owner reads it. normalizeEncoding is Node's getEncodingOps (empty and
+     * unknown names throw ERR_UNKNOWN_ENCODING); normalizeEncodingEmptyUtf8
+     * is Node's normalizeEncoding (an empty name reads as utf8, unknown
+     * names throw); normalizeEncodingOrUtf8 is Buffer.byteLength's read (an
+     * unknown name counts as utf8, nothing throws). */
+    "buffer.normalizeEncoding": { argTypes: [STRING], result: STRING },
+    "buffer.normalizeEncodingEmptyUtf8": { argTypes: [STRING], result: STRING },
+    "buffer.normalizeEncodingOrUtf8": { argTypes: [STRING], result: STRING },
+    /** buf.write with an encoding name known only at run time: Node checks
+     * the offset and length BEFORE it reads the name, so the raw value goes
+     * to the runtime and the range errors win over an unknown name. */
+    "buffer.writeStrDyn": { argTypes: [BYTES_U8, STRING, STRING, F64], result: F64 },
+    "buffer.writeStrDynLen": { argTypes: [BYTES_U8, STRING, STRING, F64, F64], result: F64 },
     "buffer.isEncoding": { argTypes: [STRING], result: BOOL },
     /** Buffer.concat(list, totalLength): the concatenation truncated or
      * zero-padded to the total. THROWS Node's 'length' RangeError on a
@@ -3452,6 +3466,8 @@ function buildLibFnSignatures() {
     "buffer.installValue": { argTypes: [], result: VOID },
     "buffer.staticValue": { argTypes: [STRING], result: DYN },
     "buffer.prototypeMember": { argTypes: [DYN], result: DYN },
+    "buffer.prototypeObject": { argTypes: [], result: DYN },
+    "buffer.slowBuffer": { argTypes: [DYN], result: BYTES_U8 },
     /** fs._toUnixTimestamp(time) over a dyn value: numeric strings and
      * finite numbers coerce (negatives answer now/1000, Node's shape);
      * everything else throws Node's ERR_INVALID_ARG_TYPE. May-throw. */

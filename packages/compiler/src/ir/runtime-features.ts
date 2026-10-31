@@ -32,12 +32,17 @@ const DYN_BUFFER_NUM_METHODS: ReadonlySet<string> = new Set(
   ]),
 );
 
-/** Buffer.prototype members scr_bytes_dyn.c refuses on Buffer receivers. */
-const DYN_BUFFER_REFUSED_METHODS: readonly string[] = [
-  ...["read", "write"].flatMap((rw) => [
-    ...["UIntLE", "UIntBE", "UintLE", "UintBE", "IntLE", "IntBE"].map((n) => `${rw}${n}`),
-    ...["BigUInt64", "BigUint64", "BigInt64"].flatMap((n) => [`${rw}${n}LE`, `${rw}${n}BE`]),
-  ]),
+/** The variable-width and BigInt reads and writes, which
+ * scr_dyn_invoke_buffer_wide runs. */
+const DYN_BUFFER_WIDE_METHODS: readonly string[] = ["read", "write"].flatMap((rw) => [
+  ...["UIntLE", "UIntBE", "UintLE", "UintBE", "IntLE", "IntBE"].map((n) => `${rw}${n}`),
+  ...["BigUInt64", "BigUint64", "BigInt64"].flatMap((n) => [`${rw}${n}LE`, `${rw}${n}BE`]),
+]);
+
+/** The Buffer.prototype members scr_dyn_invoke_buffer refuses on Buffer
+ * receivers besides running the named ones: the per-encoding slices and
+ * writes, and inspect. */
+const DYN_BUFFER_FAMILY_METHODS: readonly string[] = [
   ...["ascii", "base64", "base64url", "latin1", "hex", "ucs2", "utf8"].flatMap((enc) => [
     `${enc}Slice`,
     `${enc}Write`,
@@ -47,11 +52,13 @@ const DYN_BUFFER_REFUSED_METHODS: readonly string[] = [
 
 /** The scr_bytes_dyn.c entry, one per method family, that a checked-dynamic
  * call of a Buffer.prototype method name routes to: the fixed-width reads and
- * writes (both "UInt" and "Uint" spellings), write, fill, toString, the
- * searches, and the other Buffer-only members. Each runs the method on a
- * Buffer receiver and gives any other receiver the ordinary dispatch. */
+ * writes (both "UInt" and "Uint" spellings), the variable-width and BigInt
+ * ones, write, fill, toString, the searches, and the other Buffer-only
+ * members. Each runs the method on a Buffer receiver and gives any other
+ * receiver the ordinary dispatch. */
 export const DYN_BUFFER_METHODS: ReadonlyMap<string, string> = new Map([
   ...[...DYN_BUFFER_NUM_METHODS].map((m): [string, string] => [m, "scr_dyn_invoke_buffer_num"]),
+  ...DYN_BUFFER_WIDE_METHODS.map((m): [string, string] => [m, "scr_dyn_invoke_buffer_wide"]),
   ["write", "scr_dyn_invoke_buffer_write"],
   ["fill", "scr_dyn_invoke_buffer_fill"],
   ["toString", "scr_dyn_invoke_buffer_to_string"],
@@ -67,13 +74,15 @@ export const DYN_BUFFER_METHODS: ReadonlyMap<string, string> = new Map([
     "swap16",
     "swap32",
     "swap64",
-    ...DYN_BUFFER_REFUSED_METHODS,
+    ...DYN_BUFFER_FAMILY_METHODS,
   ].map((m): [string, string] => [m, "scr_dyn_invoke_buffer"]),
 ]);
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // DEP0040 rides the dyn-async unit's warning machinery.
   "async.awaitDyn",
+  // So does SlowBuffer's DEP0030.
+  "buffer.slowBuffer",
   // The child property table adopts thenables through the dyn-async unit.
   "child.propsInstall",
   "child.propsResolve",
@@ -450,6 +459,7 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.constructor",
   "buffer.staticValue",
   "buffer.prototypeMember",
+  "buffer.prototypeObject",
 ]);
 
 /** Entry points that link the querystring unit. */
@@ -516,6 +526,8 @@ interface TypeTables {
   /** mentionsTextCodec's and mentionsTextDecoder's carriers. */
   textCodecCarriers?: TypeCarriers;
   textDecoderCarriers?: TypeCarriers;
+  /** mentionsU8Bytes's carriers. */
+  u8BytesCarriers?: TypeCarriers;
 }
 
 /** Whether boxing a value of type `t` as dyn boxes a promise, which goes
@@ -879,6 +891,56 @@ function webCryptoAsymmetricScan(): RuleScan {
   };
 }
 
+/** The Buffer.prototype method names a checked-dynamic read can answer from
+ * scr_bytes_dyn.c: the ones calls route there, and the members Buffer
+ * defines over %TypedArray%.prototype's. */
+const BUFFER_PROTOTYPE_METHOD_NAMES: ReadonlySet<string> = new Set([
+  ...DYN_BUFFER_METHODS.keys(),
+  "subarray",
+  "slice",
+  "toLocaleString",
+]);
+
+const u8BytesLeaf: CarrierLeaf = (t) => t.kind === "bytes" && t.elem === "u8";
+
+/** Whether converting a value of type `t` to dyn can box a Buffer: a
+ * Uint8Array or Buffer, or a function, collection, record, union, promise
+ * or class instance that carries one. */
+function mentionsU8Bytes(t: IrType, tables: TypeTables): boolean {
+  tables.u8BytesCarriers ??= leafCarriers(tables, u8BytesLeaf);
+  return carriesLeaf(t, tables.u8BytesCarriers, u8BytesLeaf, tables);
+}
+
+/** A checked-dynamic read with a key computed at run time, or one naming a
+ * Buffer.prototype method, in a module that makes Buffer values and boxes a
+ * value that can hold one: `buf[name]` and `buf.indexOf` read as values
+ * name Buffer.prototype methods, which scr_bytes_dyn.c answers. */
+function computedBufferMemberScan(mod: IrModule): RuleScan {
+  let tables: TypeTables | undefined;
+  const typeTables = (): TypeTables =>
+    (tables ??= {
+      records: new Map((mod.records ?? []).map((r) => [r.id, r])),
+      unions: new Map((mod.unions ?? []).map((u) => [u.id, u])),
+      classes: new Map((mod.classes ?? []).map((c) => [c.name, c])),
+    });
+  let computed = false;
+  let buffer = false;
+  let boxed = false;
+  return {
+    expr: (node) => {
+      if (
+        node.kind === "dynKeyGet" &&
+        (node.key.kind !== "strLit" || BUFFER_PROTOTYPE_METHOD_NAMES.has(node.key.value))
+      )
+        computed = true;
+      else if (node.kind === "libCall" && node.fn.startsWith("buffer.")) buffer = true;
+      else if (!boxed && node.kind === "dynFrom" && mentionsU8Bytes(node.value.type, typeTables()))
+        boxed = true;
+    },
+    result: () => computed && buffer && boxed,
+  };
+}
+
 /** Whether the module calls WebCrypto and a string literal in it names one
  * of the asymmetric algorithms (matched without regard to case, as
  * normalizeAlgorithm matches names): scr_webcrypto_pki.c and the pki unit
@@ -1179,12 +1241,14 @@ const RUNTIME_FEATURE_RULES = {
   builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
+    scan: computedBufferMemberScan,
     fns: [
       ...DYN_INVOKE_LIB_FNS,
       ...UTIL_CALLABLE_LIB_FNS,
       ...BUILTIN_CLASS_LIB_FNS,
       "util.promisifyDyn",
       "buffer.prototypeMember",
+      "buffer.prototypeObject",
       // scr_webstreams.c calls the iterators ReadableStream.from reads.
       "webstream.class",
       "webstream.instanceOf",
@@ -1242,10 +1306,24 @@ const RUNTIME_FEATURE_RULES = {
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
-    // Buffer.prototype members read as values dispatch to the same entries.
-    fns: ["buffer.prototypeMember"],
+    // Buffer.prototype members read as values, and Buffer members read with
+    // a computed key, dispatch to the same entries.
+    fns: ["buffer.prototypeMember", "buffer.prototypeObject"],
+    scan: computedBufferMemberScan,
     expr: (node, _tables) => node.kind === "dynInvoke" && DYN_BUFFER_METHODS.has(node.method),
   }),
+  /** Checked-dynamic reads that answer Buffer.prototype methods by name
+   * (`buf[name]`, `buf.indexOf` as a value, Buffer.prototype): the program
+   * installs scr_bytes_dyn.c's member hook, which references every
+   * scr_dyn_invoke_buffer entry. */
+  dynBufferMembers: rule({
+    fns: ["buffer.prototypeMember", "buffer.prototypeObject"],
+    scan: computedBufferMemberScan,
+  }),
+  /** Buffer.prototype as a value: the program installs the symbol unit's
+   * Symbol.for for scr_bytes_dyn.c, which registers
+   * Symbol(nodejs.util.inspect.custom) as one of its keys. */
+  bufferPrototypeObject: rule({ fns: ["buffer.prototypeObject"] }),
   /** createRequire's require and require.resolve with specifiers computed
    * at run time (scr_require.c). */
   computedRequire: rule({ fns: ["module.requireComputed", "module.resolveComputed"] }),
@@ -1259,6 +1337,7 @@ const RUNTIME_FEATURE_RULES = {
       "buffer.installValue",
       "buffer.staticValue",
       "buffer.prototypeMember",
+      "buffer.prototypeObject",
       "dyn.validateString",
       "dyn.validateStrings",
       "path.resolveValue",
@@ -1476,6 +1555,14 @@ const RUNTIME_FEATURE_RULES = {
     prefixes: ["sym.", "disposable."],
     types: ["symbol"],
   }),
+  /** Symbol.toPrimitive is read (sym.wellKnown with that name, or a name
+   * computed at run time): the program installs ToNumber's
+   * Symbol.toPrimitive step (scr_dyn_to_primitive_number_install). */
+  toPrimitiveNumber: rule({
+    libCall: (node) =>
+      node.fn === "sym.wellKnown" &&
+      (node.args[0]?.kind !== "strLit" || node.args[0].value === "toPrimitive"),
+  }),
   tls: rule({ prefixes: ["tls.", "https.", "http2."], types: ["secureCtx"] }),
   tlsCa: rule({ prefixes: ["tlsca."] }),
   /** util.promisify over an untyped function (scr_util_promisify.c): its
@@ -1648,9 +1735,12 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynForAwait: false,
     dynIntegrityQueries: false,
     dynBuffer: false,
+    dynBufferMembers: false,
+    bufferPrototypeObject: false,
     builtinValues: false,
     computedRequire: false,
     symbol: false,
+    toPrimitiveNumber: false,
     tls: false,
     tlsCa: false,
     utilPromisify: false,
