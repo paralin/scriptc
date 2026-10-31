@@ -374,11 +374,24 @@ export async function linkNativeExecutable(
               ...(await snapshotDependencies([...toolchain, ...additionalDependencyPaths])),
             ])
             .catch(() => null);
-    await execFileAsync(linker, args).catch(async (error: unknown) => {
+    const link = async (withLld: boolean): Promise<void> => {
+      try {
+        await execFileAsync(linker, linkArgs(withLld));
+      } catch (error) {
+        // Only the link invocation itself can report a driver the host lacks.
+        // Everything after it fails with its own tool, whose name the message
+        // must keep.
+        const missing = missingLinkDriverMessage(error, linker, plan.target.platform);
+        if (missing === null) throw error;
+        throw new CcCompileError(linker, subprocessFailureDetail(error), missing);
+      }
+    };
+    await link(lld.length !== 0).catch(async (error: unknown) => {
       // A failed link with lld runs again with the driver's default linker,
-      // whose error (if any) is the one reported.
-      if (lld.length === 0) throw error;
-      await execFileAsync(linker, linkArgs(false));
+      // whose error (if any) is the one reported. A driver the host cannot
+      // start is not retried, since the same command cannot succeed.
+      if (lld.length === 0 || error instanceof CcCompileError) throw error;
+      await link(false);
     });
     const output = await stat(privateOut);
     if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");
@@ -388,7 +401,21 @@ export async function linkNativeExecutable(
       if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);
     }
     if (plan.darwinDebugSymbols) {
-      await createDarwinDebugSymbols(privateOut);
+      try {
+        await createDarwinDebugSymbols(privateOut);
+      } catch (error) {
+        // The link succeeded and only the debug symbols are missing, so name
+        // the tool that could not produce them rather than the driver.
+        const detail = subprocessFailureDetail(error);
+        throw new CcCompileError(
+          "dsymutil",
+          detail,
+          `dsymutil failed to collect the debug symbols for ${basename(plan.outputPath)}:\n${detail}` +
+            (isMissingExecutable(error)
+              ? '\ndsymutil comes with Apple\'s developer tools: on macOS, install them with "xcode-select --install".'
+              : ""),
+        );
+      }
       await installDarwinDebugSymbols(await readDarwinDebugSymbols(privateOut), plan.outputPath);
     }
     await rename(privateOut, plan.outputPath).catch(async () => {
@@ -414,13 +441,11 @@ export async function linkNativeExecutable(
     )
       throw error;
     const detail = subprocessFailureDetail(error);
-    const missing = missingLinkDriverMessage(error, linker, plan.target.platform);
     throw new CcCompileError(
       linker,
       detail,
-      missing ??
-        `${linker} failed linking ${basename(plan.outputPath)} from the precompiled runtime pack.\n${detail}` +
-          staticLinkFailureNote(plan.target, plan.staticLink === true),
+      `${linker} failed linking ${basename(plan.outputPath)} from the precompiled runtime pack.\n${detail}` +
+        staticLinkFailureNote(plan.target, plan.staticLink === true),
     );
   } finally {
     await Promise.all([

@@ -418,6 +418,45 @@ describe("runtime pack manifests", () => {
     });
   });
 
+  test("a dev build whose link succeeds but cannot run dsymutil names dsymutil", async () => {
+    const { root, packagePath } = await fixture();
+    const programObject = join(root, "program.o");
+    const linker = join(root, "linker.mjs");
+    await Promise.all([
+      writeFile(programObject, "program object"),
+      writeFile(
+        linker,
+        [
+          "#!/usr/bin/env node",
+          'import { writeFileSync } from "node:fs";',
+          'const outputIndex = process.argv.indexOf("-o");',
+          'writeFileSync(process.argv[outputIndex + 1], "linked executable");',
+          "",
+        ].join("\n"),
+      ),
+    ]);
+    await chmod(linker, 0o755);
+    const plan = await createNativeLinkPlan({
+      target: MACOS_ARM64_TARGET,
+      programObject,
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "dev",
+      resolver: () => packagePath,
+    });
+    expect(plan.darwinDebugSymbols).toBe(true);
+
+    const failure = await linkNativeExecutable(plan, { linker }).then(
+      () => null,
+      (error: unknown) => error as { name?: string; driver?: string; message?: string },
+    );
+    expect(failure?.name).toBe("CcCompileError");
+    expect(failure?.driver).toBe("dsymutil");
+    expect(failure?.message).toContain("dsymutil failed to collect the debug symbols for program:");
+    expect(failure?.message).not.toContain("cannot run the link driver");
+  });
+
   test("a missing driver names the toolchain its target links with", () => {
     const enoent = Object.assign(new Error("spawn zig ENOENT"), { code: "ENOENT" });
     expect(missingLinkDriverMessage(enoent, "zig", "win32")).toContain(
