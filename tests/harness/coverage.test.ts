@@ -989,6 +989,25 @@ test("Node islands (report-only): one package per class, gap islands first", asy
   expect(coveragePasses(coverage, "node-islands")).toBe(false);
 });
 
+test("a package the policy islands types its values as island handles", async () => {
+  // The analysis lowers with the island set a build would decide, so an SDK
+  // whose implementation is not compiled natively (ni-config ships a webpack
+  // marker) types its config object as an island handle. Writing a member
+  // (`config.region = …`, what a client-config builder does) is then a
+  // dynamic property write the build lowers through the island, not
+  // "assignment to non-variables" (SC1090) on an unmapped package type.
+  const entry = fixture("node-islands-config-writes/main.ts");
+  await expect(report(entry)).toMatchFileSnapshot(
+    "__snapshots__/coverage-node-islands-config-writes.txt",
+  );
+  const { coverage } = analyze(entry);
+  expect(coverage.stats.statementsFailed).toBe(0);
+  expect(coverage.diagnostics.filter((d) => d.code !== "SC2013")).toEqual([]);
+  expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
+    ["ni-config", "packaging"],
+  ]);
+});
+
 test("unknown scriptc settings warn in a build and make the island report unavailable", async () => {
   const entry = fixture("node-islands-config/main.ts");
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-island-config-"));
@@ -1021,11 +1040,14 @@ test("Node island policy from the command line: native, forced, off", () => {
   const forced = analyze(entry, {
     nodeIslands: { native: ["ni-eval"], islands: ["ni-typed", "not-a-dependency"] },
   }).coverage.nodeIslands!;
+  // ni-typed is lowered as the island a build would make of it, so the gap
+  // its own module body carries (the CommonJS `exports` reference, as
+  // ni-ctor's does) ranks above the CLI mark, exactly as a build reports it.
   expect(forced.islands.map((i) => [i.package, i.class, i.decision])).toEqual([
     ["ni-gap", "gap", "auto"],
+    ["ni-typed", "gap", "cli"],
     ["ni-ctor", "object-model", "auto"],
     ["ni-bundled", "packaging", "auto"],
-    ["ni-typed", "marked", "cli"],
   ]);
   expect(forced.violations.map((v) => v.code)).toEqual(["SC8003"]);
   expect(forced.unknownPackages).toEqual(["not-a-dependency"]);
