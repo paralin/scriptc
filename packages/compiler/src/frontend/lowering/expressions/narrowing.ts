@@ -389,12 +389,14 @@ export function lowerTernary(
   }
 }
 
-/** Whether `expr` is the checked-dynamic Number/Boolean prototype value a
- * JavaScript source read (jsPrimitivePrototypeValue), or one of its
- * members: the value is the prototype OBJECT, not the wrapper's primitive,
- * so the checker's wrapper type must not extract a scalar from it. */
+/** Whether `expr` is the Number/Boolean prototype value a JavaScript
+ * source read (jsPrimitivePrototypeValue: dyn.builtinPrototype for Number,
+ * wrapper.booleanPrototype for Boolean), or one of its members: the value
+ * is the prototype OBJECT, not the wrapper's primitive, so the checker's
+ * wrapper type must not extract a scalar from it. */
 function isPrimitivePrototypeValue(expr: IrExpr): boolean {
-  if (expr.kind === "libCall") return expr.fn === "dyn.builtinPrototype";
+  if (expr.kind === "libCall")
+    return expr.fn === "dyn.builtinPrototype" || expr.fn === "wrapper.booleanPrototype";
   return expr.kind === "dynKeyGet" && isPrimitivePrototypeValue(expr.value);
 }
 

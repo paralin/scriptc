@@ -1152,6 +1152,9 @@ const RUNTIME_FEATURE_RULES = {
       "wrapper.objectTag",
       "wrapper.new",
       "wrapper.toObject",
+      // The Boolean prototype's methods run scr_js_wrapper_apply in the
+      // same unit, which calls scr_dyn_invoke.
+      "wrapper.booleanPrototype",
     ],
     // Constant-key reads of Object.prototype member names answer the
     // inherited member through scr_dyn_invoke.c.

@@ -3868,6 +3868,12 @@ function buildLibFnSignatures() {
      * (scr_js_wrapper_this_string). */
     "wrapper.isStringMethod": { argTypes: [DYN, STRING], result: BOOL },
     "wrapper.thisString": { argTypes: [DYN, STRING], result: DYN },
+    /** Boolean.prototype as a value in a JavaScript source: the wrapper
+     * unit's Boolean prototype object (the one `new Boolean(v)` instances
+     * inherit from), so its valueOf/toString accept a primitive boolean or
+     * a Boolean wrapper receiver and throw Node's brand-check TypeError for
+     * a foreign one. `constructor` is the compiled Boolean constructor. */
+    "wrapper.booleanPrototype": { argTypes: [DYN], result: DYN },
     "fs.callbackValue": { argTypes: [STRING], result: DYN },
     "fs.callbackCall": { argTypes: [STRING, DYN], result: DYN },
     "process.hrtimeValue": { argTypes: [], result: DYN },
