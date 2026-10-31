@@ -1594,6 +1594,10 @@ void scr_weak_dispose(void *object);
 double scr_dyn_arr_len(const ScrDyn *d);
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i);
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key);
+/* Whether the builtin Array.prototype object exists and carries `key`
+ * before the method table installs; the inherited-read fallback leaves a
+ * name it owns alone, since the read that reached it already answered. */
+bool scr_dyn_array_prototype_owns(const ScrStr *key);
 /* The member `key` of an array found before Array.prototype: an own named
  * property, or one on its custom prototype chain (Object.setPrototypeOf).
  * NULL when the chain reaches Array.prototype without it. +1. */

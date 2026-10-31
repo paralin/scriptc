@@ -35,7 +35,7 @@ import { emitUnionWiden } from "./expr-records.js";
 import { emitJsIcLiteralMember, emitJsIcMethod, jsIcMethods } from "./js-ic.js";
 import { jsImmediates } from "./jsval.js";
 import { jsIcLiteralKey } from "../../ir/js-ic.js";
-import { DYN_BUFFER_METHODS } from "../../ir/runtime-features.js";
+import { ARRAY_PROTOTYPE_MEMBER_NAMES, DYN_BUFFER_METHODS } from "../../ir/runtime-features.js";
 
 export function emitDynamicExpr(
   host: LlvmEmitterContext,
@@ -682,9 +682,13 @@ export function emitDynamicExpr(
         e.key.type.kind === "dyn" ? host.dyn.dynComputedKeyGetHelper() : host.dyn.dynKeyGetHelper();
       const t = B.tmp();
       const generic = `call ptr @${helper}(ptr ${d.name}, ptr ${k.name}, i1 ${e.optional ? "true" : "false"})`;
-      const inherited = e.key.kind === "strLit" && INHERITED_OBJECT_MEMBERS.has(e.key.value);
+      const inherited =
+        e.key.kind === "strLit" &&
+        (INHERITED_OBJECT_MEMBERS.has(e.key.value) ||
+          ARRAY_PROTOTYPE_MEMBER_NAMES.has(e.key.value));
       // Object.prototype itself answers its own members before the ordinary
-      // read (which fences reflection on the prototype).
+      // read (which fences reflection on the prototype); an array answers
+      // the methods its prototype installs.
       let prototypeJoin: { member: string; from: string; join: string } | null = null;
       if (inherited) {
         host.declare(`declare ptr @scr_dyn_object_prototype_member(ptr, ptr)`);
@@ -730,9 +734,10 @@ export function emitDynamicExpr(
       }
       let result = t;
       if (prototypeJoin) {
-        // An undefined read of an Object.prototype member name answers the
-        // member the receiver inherits (scr_dyn_invoke.c; the frontend
-        // links that unit for these reads).
+        // An undefined read of an Object.prototype member name, or of an
+        // Array.prototype method on an array, answers the member the
+        // receiver inherits (scr_dyn_invoke.c; the frontend links that unit
+        // for these reads).
         host.declare(`declare ptr @scr_dyn_inherited_read(ptr, ptr, ptr)`);
         const read = B.tmp();
         B.line(
