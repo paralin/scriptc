@@ -179,6 +179,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_dyn.c", "streamDyn"],
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
+  // Object.isExtensible and Object.isSealed of a value typed dynamically; a
+  // unit of its own so scr_json.c keeps its layout for every other program.
+  ["scr_dyn_integrity.c", "dynIntegrityQueries"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],

@@ -4270,6 +4270,13 @@ function buildLibFnSignatures() {
     "dyn.isExtensible": { argTypes: [DYN], result: BOOL },
     "dyn.seal": { argTypes: [DYN], result: DYN },
     "dyn.isSealed": { argTypes: [DYN], result: BOOL },
+    /** Object.isExtensible / Object.isSealed of a value whose kind is known
+     * only at runtime: a native handle or a promise has no modeled integrity
+     * state, so these refuse (SC2020) instead of answering like
+     * dyn.isExtensible/dyn.isSealed, which the static arms (a class
+     * instance's checked view, a typed function value) keep using. */
+    "dyn.isExtensibleQuery": { argTypes: [DYN], result: BOOL },
+    "dyn.isSealedQuery": { argTypes: [DYN], result: BOOL },
     "dyn.objValues": { argTypes: [DYN], result: DYN },
     /** Object.values as a native vector of checked values, for results the
      * program consumes directly (for-of, index reads, read-only methods). */
