@@ -1037,18 +1037,28 @@ test("unknown scriptc settings warn in a build and make the island report unavai
 
 test("Node island policy from the command line: native, forced, off", () => {
   const entry = fixture("node-islands/main.ts");
-  const forced = analyze(entry, {
+  const forcedCoverage = analyze(entry, {
     nodeIslands: { native: ["ni-eval"], islands: ["ni-typed", "not-a-dependency"] },
-  }).coverage.nodeIslands!;
-  // ni-typed is lowered as the island a build would make of it, so the gap
-  // its own module body carries (the CommonJS `exports` reference, as
-  // ni-ctor's does) ranks above the CLI mark, exactly as a build reports it.
+  }).coverage;
+  const forced = forcedCoverage.nodeIslands!;
+  // A forced package's implementation is not part of the program a build
+  // compiles: its class is the CLI mark, and its own module body contributes
+  // no coverage failures, exactly as a build's SC8001 note reports it.
   expect(forced.islands.map((i) => [i.package, i.class, i.decision])).toEqual([
     ["ni-gap", "gap", "auto"],
-    ["ni-typed", "gap", "cli"],
     ["ni-ctor", "object-model", "auto"],
     ["ni-bundled", "packaging", "auto"],
+    ["ni-typed", "marked", "cli"],
   ]);
+  // ni-typed compiles statically but its module body is not part of the
+  // lowered program (the CommonJS `exports` assignment its JavaScript
+  // carries would report SC1090); a build excludes it, and the analysis
+  // reports nothing of it.
+  expect(
+    [...forcedCoverage.diagnostics, ...(forcedCoverage.runtimeFences ?? [])].filter((d) =>
+      d.loc.file.includes("ni-typed"),
+    ),
+  ).toEqual([]);
   expect(forced.violations.map((v) => v.code)).toEqual(["SC8003"]);
   expect(forced.unknownPackages).toEqual(["not-a-dependency"]);
   const off = analyze(entry, { nodeIslands: { mode: "off" } }).coverage;

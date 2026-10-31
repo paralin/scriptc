@@ -42,9 +42,16 @@ export function analyzeWithFrontend(
     }
     ffi = loaded.profile;
   }
+  // The first load keeps the whole program, as a build's first load does: the
+  // island report classifies every package from it (executable/prepare.ts's
+  // decideNodeIslands), including a package the policy forces into Node.
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
   const fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
     nodeIslands: true,
   });
+  // The reload lowering may run on, once the island set is known (see
+  // lowerFrontend): null when the first load already excludes every island.
+  const lowerLoad: { fe: Frontend | null; key: string } = { fe: null, key: "" };
   try {
     const emptyStats = {
       statementsTotal: 0,
@@ -104,7 +111,6 @@ export function analyzeWithFrontend(
     // decision for the packages a build actually islands, taken from the load
     // before lowering exactly as a build takes it (executable/prepare.ts's
     // decideNodeIslands).
-    const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
     // The packages a build islands (executable/prepare.ts's decideNodeIslands):
     // the ones whose static compilation was refused, or that the policy marks.
     // The report's other islands are would-be (it lists the islands a build
@@ -136,9 +142,33 @@ export function analyzeWithFrontend(
     // reaches, but the analysis additionally lowers the unreached remainder
     // (throwaway) so the report covers everything the source declares — with
     // the unreached share in its own group.
+    // The frontend lowering runs on. A package the first load compiled but a
+    // build islands is not part of the compiled program: the reload's
+    // islandPackages keeps its implementation out of the graph and types its
+    // values as island handles, exactly as the build's island reload does
+    // (executable/prepare.ts). Lowering the first load's program would report
+    // refusals from code the build excludes. A refused package was never in
+    // the program, so it needs no reload.
+    const lowerFrontend = (islands: NodeIslandSet | null): Frontend => {
+      const packages = islands === null ? [] : [...islands.packages.keys()].sort();
+      const compiled = packages.filter((name) =>
+        fe.npmStatic.some((e) => e.package === name && e.status === "static"),
+      );
+      if (compiled.length === 0) return fe;
+      const key = packages.join("\n");
+      if (lowerLoad.fe === null || key !== lowerLoad.key) {
+        lowerLoad.fe?.dispose();
+        lowerLoad.fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
+          nodeIslands: true,
+          islandPackages: new Set(packages),
+        });
+        lowerLoad.key = key;
+      }
+      return lowerLoad.fe;
+    };
     const lowerWith = (islands: NodeIslandSet | null): LowerResult => {
       const islandsActive = islands !== null && islands.packages.size > 0;
-      return fe.lower({
+      return lowerFrontend(islands).lower({
         coverage: true,
         targetPlatform: buildPlatform,
         ...(islandsActive ? { nodeIslands: islands } : {}),
@@ -207,9 +237,15 @@ export function analyzeWithFrontend(
         ...(nodeIslands !== null ? { nodeIslands } : {}),
         preflightFailed: false,
       },
-      sourceTexts: fe.sourceTexts(),
+      // The island reload's files are a subset of the first load's; merging
+      // keeps both loads' texts for whatever a diagnostic names.
+      sourceTexts:
+        lowerLoad.fe === null
+          ? fe.sourceTexts()
+          : new Map([...fe.sourceTexts(), ...lowerLoad.fe.sourceTexts()]),
     };
   } finally {
+    lowerLoad.fe?.dispose();
     fe.dispose();
   }
 }
