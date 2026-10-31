@@ -1817,7 +1817,8 @@ function normalizeBufEncoding(
  * name can be read more than once. `passRaw` hands the value over unnormalized
  * instead, for a surface whose runtime entry reads the name after its own
  * checks. A literal encoding keeps the call shape unchanged and evaluates
- * `prior` in place. */
+ * `prior` in place, except that an explicitly undefined argument with
+ * effects binds `prior` and then runs those effects, as JavaScript does. */
 function withBufEncoding(
   lowerer: Lowerer,
   enc: BufEncodingArg,
@@ -1827,15 +1828,20 @@ function withBufEncoding(
   passRaw = false,
 ): IrExpr {
   if ("literal" in enc) {
-    const built = build(prior, { kind: "strLit", value: enc.literal, type: STRING, loc });
-    if (!enc.effects || isSafeToDiscard(enc.effects)) return built;
-    return {
-      kind: "seqExpr",
-      stmts: [{ kind: "exprStmt", expr: enc.effects, loc }],
-      result: built,
-      type: built.type,
-      loc,
-    };
+    const encoding: IrExpr = { kind: "strLit", value: enc.literal, type: STRING, loc };
+    if (!enc.effects || isSafeToDiscard(enc.effects)) return build(prior, encoding);
+    // An explicitly undefined argument that still has effects runs where
+    // JavaScript evaluates it — after the receiver and the preceding
+    // arguments, before the call — so bind those first.
+    const stmts: IrStmt[] = [];
+    const args = prior.map((expr) => {
+      const local = lowerer.declareHiddenLocal("%bufferArgument", expr.type);
+      stmts.push({ kind: "varDecl", localId: local.id, init: expr, loc });
+      return varRef(local.id, expr.type, loc);
+    });
+    stmts.push({ kind: "exprStmt", expr: enc.effects, loc });
+    const result = build(args, encoding);
+    return { kind: "seqExpr", stmts, result, type: result.type, loc };
   }
   const stmts: IrStmt[] = [];
   const args = prior.map((expr) => {

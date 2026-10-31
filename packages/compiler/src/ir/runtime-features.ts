@@ -914,7 +914,9 @@ function mentionsU8Bytes(t: IrType, tables: TypeTables): boolean {
 /** A checked-dynamic read with a key computed at run time, or one naming a
  * Buffer.prototype method, in a module that makes Buffer values and boxes a
  * value that can hold one: `buf[name]` and `buf.indexOf` read as values
- * name Buffer.prototype methods, which scr_bytes_dyn.c answers. */
+ * name Buffer.prototype methods, which scr_bytes_dyn.c answers. A Buffer
+ * value also comes from a typed file read, which answers a branded Buffer
+ * with no `buffer.*` call, so those reads count as making one. */
 function computedBufferMemberScan(mod: IrModule): RuleScan {
   let tables: TypeTables | undefined;
   const typeTables = (): TypeTables =>
@@ -934,6 +936,7 @@ function computedBufferMemberScan(mod: IrModule): RuleScan {
       )
         computed = true;
       else if (node.kind === "libCall" && node.fn.startsWith("buffer.")) buffer = true;
+      else if (node.kind === "libCall" && FS_READ_BYTES_FNS.has(node.fn)) buffer = true;
       else if (!boxed && node.kind === "dynFrom" && mentionsU8Bytes(node.value.type, typeTables()))
         boxed = true;
     },
