@@ -89,7 +89,14 @@ export function computeMayThrow(
   // FUNC-targeted dynChecks synthesize adapter closures outside the IR's
   // closure table; any callValue may then reach a throwing body.
   let sawDynFuncAdapter = false;
-  const asyncFns = new Set(mod.functions.filter((fn) => fn.async).map((fn) => fn.name));
+  // A bindAtCall generator binds parameters at the call. For an async one
+  // that prologue still runs inside the call, so the async exclusion below
+  // must not apply: the call can throw synchronously.
+  const asyncFns = new Set(
+    mod.functions
+      .filter((fn) => fn.async && !(fn.generator !== undefined && fn.generator.bindAtCall === true))
+      .map((fn) => fn.name),
+  );
   // Generator functions follow the async exclusion: CALLING one only
   // allocates the suspended fiber (nothing runs, nothing can throw) — a
   // body throw surfaces at genResume, which seeds unconditionally below.

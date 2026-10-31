@@ -327,10 +327,12 @@ export function lowerArrayCallback(
  * function or arrow expression that declares no such parameter, or binds
  * it to a plain name that appears nowhere else in it (any identifier of
  * that name counts, including shorthand properties and shadowing
- * bindings). Any other callback may. */
+ * bindings). Any other callback may. `index` counts the callback's data
+ * parameters: an explicit `this` parameter is not one of them. */
 function readsParameter(argNode: ts.Expression, index: number): boolean {
   if (!ts.isArrowFunction(argNode) && !ts.isFunctionExpression(argNode)) return true;
-  const param = argNode.parameters.nodes[index];
+  const params = callbackDataParams(argNode);
+  const param = params[index];
   if (!param) return false;
   if (!ts.isIdentifier(param.name) || param.initializer || param.dotDotDotToken) return true;
   const name = param.name.text;
@@ -339,10 +341,7 @@ function readsParameter(argNode: ts.Expression, index: number): boolean {
       ts.isIdentifier(node) &&
       (node.text === name || node.text === "arguments")) ||
     (ts.forEachChild(node, (child) => (mentions(child) ? true : undefined)) ?? false);
-  return (
-    argNode.parameters.nodes.some((other) => other !== param && mentions(other)) ||
-    mentions(argNode.body)
-  );
+  return params.some((other) => other !== param && mentions(other)) || mentions(argNode.body);
 }
 
 /** The result array's element when it is the unit-only union (`undefined[]`,
