@@ -4195,6 +4195,11 @@ export type IrExpr =
        * compiler analysis bug and reports itself as one. */
       inferredSite?: string;
       origin?: number;
+      /** The element position of an array literal whose store checks this
+       * value: a failure inside the check reports that position in its
+       * path (`$[0]`), where a standalone check names only the root
+       * (`$`). */
+      pathIndex?: number;
       type: IrType;
       loc: SrcLoc;
     };
