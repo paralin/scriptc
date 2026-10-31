@@ -976,7 +976,7 @@ export interface LowerResult {
   tiers?: TierReport;
   /** The program replaces a process output stream's write method, with the
    * site: the executable planner refuses the combination with Node islands
-   * (SC8020), whose process objects would not see the patch. Present only
+   * (SC8006), whose process objects would not see the patch. Present only
    * when the build has islands. */
   stdioPatches?: StdioPatchSite[];
 }
@@ -2754,7 +2754,7 @@ export class Lowerer {
    * (programPatchesStdio in builtins/process.ts). */
   patchesStdio: boolean | null = null;
   /** The write-replacement site programPatchesStdio found: the executable
-   * planner refuses it beside Node islands (SC8020). */
+   * planner refuses it beside Node islands (SC8006). */
   readonly stdioPatchSites: StdioPatchSite[] = [];
   requestInitPropMutatedSyms: Set<ts.Symbol> | null = null;
   emitterEventTable: Map<string, EventSig> | null = null;
@@ -10079,7 +10079,7 @@ export class Lowerer {
     // becomes its js twin), so coverage's dynamic statements are unchanged.
     if (module && this.dynamicFunctions.length > 0) promoteJsvals(module);
     // A program that replaces a process output stream's write method beside
-    // Node islands is refused by the executable planner (SC8020): an
+    // Node islands is refused by the executable planner (SC8006): an
     // island's process.stdout is its own object. Only island builds pay for
     // the whole-program scan.
     const stdioPatches =
