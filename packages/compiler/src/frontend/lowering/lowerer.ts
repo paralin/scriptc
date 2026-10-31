@@ -977,7 +977,7 @@ export interface LowerResult {
   tiers?: TierReport;
   /** The program replaces a process output stream's write method, with the
    * site: the executable planner refuses the combination with Node islands
-   * (SC8020), whose process objects would not see the patch. Present only
+   * (SC8006), whose process objects would not see the patch. Present only
    * when the build has islands. */
   stdioPatches?: StdioPatchSite[];
 }
@@ -2755,7 +2755,7 @@ export class Lowerer {
    * (programPatchesStdio in builtins/process.ts). */
   patchesStdio: boolean | null = null;
   /** The write-replacement site programPatchesStdio found: the executable
-   * planner refuses it beside Node islands (SC8020). */
+   * planner refuses it beside Node islands (SC8006). */
   readonly stdioPatchSites: StdioPatchSite[] = [];
   requestInitPropMutatedSyms: Set<ts.Symbol> | null = null;
   emitterEventTable: Map<string, EventSig> | null = null;
@@ -10087,7 +10087,7 @@ export class Lowerer {
     // becomes its js twin), so coverage's dynamic statements are unchanged.
     if (module && this.dynamicFunctions.length > 0) promoteJsvals(module);
     // A program that replaces a process output stream's write method beside
-    // Node islands is refused by the executable planner (SC8020): an
+    // Node islands is refused by the executable planner (SC8006): an
     // island's process.stdout is its own object. Only island builds pay for
     // the whole-program scan.
     const stdioPatches =
@@ -10270,23 +10270,42 @@ export class Lowerer {
       collectionEdges.add(name);
     };
     this.prefetchProgramSymbols(parts);
-    this.collectProgram(parts);
-    this.speculativeTypeQueries(() => {
-      extendAssertedRecordMembers(
-        this,
-        parts.map((fp) => fp.sf),
-      );
-      this.analyzeRuntimeOptionalArrayReads(parts);
-      this.analyzeDateJsonResults(parts);
-      this.analyzeGuardedRecordReadGlobals(parts);
-      this.analyzeJsWidenedBindings(parts);
-    });
-    // Decorated classes analyze post-collection here too: the %init seeds
-    // lower the decoration calls, whose edges (decorator bodies, construct
-    // thunks) reachable emit must see.
-    for (const info of this.classes.values()) analyzeClassDecoration(this, info);
-    this.prepareModuleInits(parts);
-    prepareCjsModuleGraph(this, parts);
+    // Collection poisons the pass the way statement lowering does: a Node
+    // island module the build cannot ship pushes its diagnostic (SC8006)
+    // and aborts (nodeIslandModules.addLoaded, lower-node-island.ts). The
+    // diagnostic is the report, and emission must not run on a program
+    // collected halfway, so the pass ends here with it. A poison nothing
+    // reported is still a bug and stays a crash.
+    try {
+      this.collectProgram(parts);
+      this.speculativeTypeQueries(() => {
+        extendAssertedRecordMembers(
+          this,
+          parts.map((fp) => fp.sf),
+        );
+        this.analyzeRuntimeOptionalArrayReads(parts);
+        this.analyzeDateJsonResults(parts);
+        this.analyzeGuardedRecordReadGlobals(parts);
+        this.analyzeJsWidenedBindings(parts);
+      });
+      // Decorated classes analyze post-collection here too: the %init seeds
+      // lower the decoration calls, whose edges (decorator bodies, construct
+      // thunks) reachable emit must see.
+      for (const info of this.classes.values()) analyzeClassDecoration(this, info);
+      this.prepareModuleInits(parts);
+      prepareCjsModuleGraph(this, parts);
+    } catch (e) {
+      if (!(e instanceof PoisonError) || this.diags.length === 0) throw e;
+      return {
+        reachable: collectionEdges,
+        result: {
+          module: null,
+          diagnostics: this.diags,
+          runtimeFences: this.runtimeFences,
+          stats: this.stats,
+        },
+      };
+    }
 
     // Every lowerable body, by emitted-function name. The names double as
     // retained-function keys and are deterministic by construction
