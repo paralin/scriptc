@@ -1178,7 +1178,7 @@ ScrDyn *scr_buffer_prototype_object(void) {
     return NULL;
   }
   scr_dyn_obj_set(object, "constructor", 11, constructor);
-  scr_dyn_obj_dict_entries(object)[object->v.obj.len - 1].enumerable = false;
+  scr_dyn_obj_set_attrs_at(object, scr_dyn_obj_index_of(object, "constructor", 11), true, false, true);
   for (size_t i = 0; i < sizeof scr_buffer_proto_own / sizeof scr_buffer_proto_own[0]; i++) {
     const char *own = scr_buffer_proto_own[i].key;
     size_t len = strlen(own);
