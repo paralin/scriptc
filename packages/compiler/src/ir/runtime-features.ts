@@ -114,6 +114,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.debounce",
   "util.throttle",
   "timers.immediatePromise",
+  // A timer callback bound to its handle as `this`.
+  "timers.thisCallback",
   // The performance timeline (scr_perf.c, linked with this unit for its
   // MaxPerformanceEntryBufferExceededWarning).
   "perf.clearMarks",

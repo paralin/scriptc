@@ -7464,6 +7464,9 @@ typedef struct {
    * instance in `ptr` boxes with this recipe on the first read, and dv
    * caches the box. */
   const ScrDynTypedRefRecipe *recipe;
+  /* A one-shot entry (scr_dyn_this_push_dyn_once): the first read takes
+   * dv, and later reads in the window answer undefined. */
+  bool once;
 } ScrDynThisEnt;
 
 static SCR_TL ScrDynThisEnt *scr_dyn_this_stack;
@@ -7496,6 +7499,7 @@ void scr_dyn_this_push(void *h, ScrDynHandleTag tag) {
   e->tag = tag;
   e->dv = NULL;
   e->recipe = NULL;
+  e->once = false;
 }
 
 void scr_dyn_this_push_dyn(const ScrDyn *v) {
@@ -7504,6 +7508,12 @@ void scr_dyn_this_push_dyn(const ScrDyn *v) {
   e->tag = 0;
   e->dv = v ? scr_dyn_retain((ScrDyn *)v) : NULL;
   e->recipe = NULL;
+  e->once = false;
+}
+
+void scr_dyn_this_push_dyn_once(const ScrDyn *v) {
+  scr_dyn_this_push_dyn(v);
+  scr_dyn_this_stack[scr_dyn_this_n - 1].once = true;
 }
 
 void scr_dyn_this_push_typed(void *ptr, const ScrDynTypedRefRecipe *recipe) {
@@ -7512,6 +7522,7 @@ void scr_dyn_this_push_typed(void *ptr, const ScrDynTypedRefRecipe *recipe) {
   e->tag = 0;
   e->dv = NULL;
   e->recipe = recipe;
+  e->once = false;
 }
 
 void scr_dyn_this_pop(void) {
@@ -7543,6 +7554,12 @@ ScrDyn *scr_dyn_this_get(void) {
         scr_dyn_typed_ref_bind_class(e->dv, (const ScrDynTypedClassOps *)r->ops);
       else if (r->view == 4)
         scr_dyn_typed_ref_bind_bag_class(e->dv, (const ScrDynTypedBagClassOps *)r->ops);
+    }
+    if (e->once) {
+      ScrDyn *taken = e->dv ? e->dv : scr_dyn_retain(scr_dyn_undefined());
+      e->dv = NULL;
+      e->once = false;
+      return taken;
     }
     if (e->dv) return scr_dyn_retain(e->dv);
     /* An uninstalled tag never binds: a unit that fires without its dyn

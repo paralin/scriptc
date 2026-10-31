@@ -1887,6 +1887,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "timers.setImmediateFnValue": "scr_set_immediate_dyn_value",
   "timers.immediatePromise": "scr_immediate_promise",
   "timers.userDelay": "scr_timer_user_delay",
+  "timers.thisCallback": "scr_timer_this_callback",
 };
 
 /** The mock-aware entry points (scr_test.c) that the timer calls of a
