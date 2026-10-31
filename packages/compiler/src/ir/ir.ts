@@ -3546,6 +3546,10 @@ export type IrExpr =
       loc: SrcLoc;
       liveRef?: true;
       fnName?: string;
+      /** The callable answers `fnName` on the main thread and the empty
+       * string on a worker thread (Node's main-thread wrapper for
+       * `process.cwd`). */
+      fnNameMainThreadOnly?: true;
       /** A boxed function's `length` when it differs from its parameter
        * count (builtin function values). */
       fnLength?: number;

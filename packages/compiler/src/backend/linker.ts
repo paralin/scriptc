@@ -13,7 +13,12 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { CcCompileError, subprocessFailureDetail } from "./native/process.js";
 import { NativeCodegenError } from "./native-codegen-core.js";
-import { staticExecutableRefusal, staticLinkFailureNote, staticLinkMapArgs } from "./targets.js";
+import {
+  staticExecutableRefusal,
+  staticLinkFailureNote,
+  staticLinkMapArgs,
+  type NativeTargetPlatform,
+} from "./targets.js";
 import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
 import { parseLinkTraceFiles } from "./native/linker-fingerprint.js";
 import {
@@ -261,6 +266,46 @@ export async function installRuntimeDataFiles(
   }
 }
 
+/** A driver the host cannot execute at all, rather than one that ran and
+ * failed. `execFile` reports both as a rejected call; only a missing
+ * executable says the build needs a tool this host does not have. */
+function isMissingExecutable(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+}
+
+/** What to install when a target's link driver cannot be spawned. A spawn
+ * failure names only the driver (`spawn zig ENOENT`), which says neither
+ * what the driver is used for nor where it comes from, so the message names
+ * the target's requirement and the package that provides the driver. Null
+ * for any other failure, whose own output is the useful report. */
+export function missingLinkDriverMessage(
+  error: unknown,
+  linker: string,
+  platform: NativeTargetPlatform,
+): string | null {
+  if (!isMissingExecutable(error)) return null;
+  const driver = basename(linker.replace(/\\/g, "/")).replace(/\.exe$/i, "");
+  let guidance: string;
+  if (driver === "zig")
+    guidance =
+      platform === "win32"
+        ? "Windows targets link with Zig, whose releases are a single zig.exe: download it from https://ziglang.org/download and put it on PATH."
+        : "This target links with Zig: download it from https://ziglang.org/download and put zig on PATH.";
+  else if (driver === "clang" || driver === "clang-cl")
+    guidance =
+      platform === "darwin"
+        ? 'macOS targets link with the clang in Apple\'s Command Line Tools: install them with "xcode-select --install".'
+        : platform === "win32"
+          ? "Windows targets link with clang from the LLVM release: download it from https://releases.llvm.org and put clang.exe on PATH."
+          : 'Linux targets link with clang: install it with the distribution\'s package manager, for example "apt install clang".';
+  else guidance = `Install ${driver} and put it on PATH.`;
+  return (
+    `cannot run the link driver "${linker}": the host has no ${driver} executable.\n` +
+    `${guidance}\n` +
+    "Set SCRIPTC_LINKER to use a different driver."
+  );
+}
+
 export async function linkNativeExecutable(
   plan: NativeLinkPlan,
   options: {
@@ -369,11 +414,13 @@ export async function linkNativeExecutable(
     )
       throw error;
     const detail = subprocessFailureDetail(error);
+    const missing = missingLinkDriverMessage(error, linker, plan.target.platform);
     throw new CcCompileError(
       linker,
       detail,
-      `${linker} failed linking ${basename(plan.outputPath)} from the precompiled runtime pack.\n${detail}` +
-        staticLinkFailureNote(plan.target, plan.staticLink === true),
+      missing ??
+        `${linker} failed linking ${basename(plan.outputPath)} from the precompiled runtime pack.\n${detail}` +
+          staticLinkFailureNote(plan.target, plan.staticLink === true),
     );
   } finally {
     await Promise.all([
