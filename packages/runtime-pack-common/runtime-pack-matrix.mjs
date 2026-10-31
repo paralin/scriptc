@@ -240,6 +240,21 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 
+/** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
+ * object model features reach (t262-da §J). Every such feature is inert
+ * until its own runtime state exists, so one build carries all of them. */
+function withJsObjectModel(variants) {
+  for (const { id, when, defines } of variants.slice()) {
+    const suffix = id === "default" ? "" : `-${id}`;
+    variants.push({
+      id: `js-om${suffix}`,
+      when: { ...when, jsObjectModel: true },
+      defines: [...defines, "SCR_JS_OBJECT_MODEL"],
+    });
+  }
+  return variants;
+}
+
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
   // scr_json.c builds one object per flavor (and workers mode): its paths
@@ -257,6 +272,17 @@ export function variantsFor(source) {
       when: { recordViewPartial: true },
       defines: ["SCR_RECORD_VIEW_PARTIAL"],
     });
+    // The JavaScript object model build (t262-da §J): every runtime feature
+    // reached only from JavaScript-source facts — builtin intrinsics, array
+    // attributes, BigInt views, handle property tables, buffer views —
+    // shares SCR_JS_OBJECT_MODEL instead of adding a variant column of its
+    // own. jsObjectModel implies dynTier, so such a program links the
+    // dynamic tier's units as well, and each feature's code is inert until
+    // its own runtime state exists. #2701 made this unit one
+    // build per flavor, so every variant here already carries the dynamic
+    // tier's primitives and each one gets its object model twin. Every other
+    // program keeps the default object, byte for byte.
+    withJsObjectModel(variants);
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.

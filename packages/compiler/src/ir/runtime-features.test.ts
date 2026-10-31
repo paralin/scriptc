@@ -1,7 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { IR_VERSION } from "./serialize.js";
 import { BOOL, DYN, STRING, VOID, arrayOf, type IrModule, type IrLibFn } from "./ir.js";
-import { moduleRuntimeFeatures, moduleUsesHttp2, moduleUsesTlsCa } from "./runtime-features.js";
+import {
+  JS_OBJECT_MODEL_LIB_FNS,
+  moduleRuntimeFeatures,
+  moduleUsesHttp2,
+  moduleUsesTlsCa,
+} from "./runtime-features.js";
 
 describe("runtime feature snapshots", () => {
   const loc = { file: "features.ts", start: 0, end: 0 };
@@ -398,5 +403,18 @@ describe("runtime feature snapshots", () => {
       "r0",
     );
     expect(moduleRuntimeFeatures(empty).fsBufferBrand).toBe(false);
+  });
+
+  test("the JavaScript object model build owns no entry yet", () => {
+    // t262-da §J: the features only a JavaScript source reaches share one
+    // runtime feature, whose entry list the slices fill as they land. This
+    // branch lists none, so a program with a sibling dynamic feature keeps
+    // the default objects.
+    expect(JS_OBJECT_MODEL_LIB_FNS.size).toBe(0);
+    const mod = module();
+    mod.functions[0]!.body.push(call("dyn.stdlibPrototype"));
+    const features = moduleRuntimeFeatures(mod);
+    expect(features.stdlibPrototypeValue).toBe(true);
+    expect(features.jsObjectModel).toBe(false);
   });
 });
