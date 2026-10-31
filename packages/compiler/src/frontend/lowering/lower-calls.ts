@@ -77,6 +77,7 @@ import {
   type IrLibFn,
   type IrLocal,
   type IrParam,
+  type IrRecordShape,
   type IrStmt,
   type IrType,
   NULL_T,
@@ -304,6 +305,7 @@ import {
 
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
 import { lowerRecordInheritedCall } from "./record-inherited.js";
+import { fenceDatePrototypeWriteCall } from "./expressions/property-access.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
@@ -8181,6 +8183,47 @@ export function lowerBytesIntegrity(
   return query ? result : lowerer.coerceToExpected(result, view.type);
 }
 
+/** True when the expression is statically a PLAIN OBJECT at runtime: a dyn
+ *  object literal, or a record (a literal, a clone, or any expression of a
+ *  record type, which dynFrom boxes field by field). Both build an ordinary
+ *  object whose fields are own data properties, which the plain-object
+ *  descriptor reader answers exactly. Every other expression (a variable of
+ *  any other type, a call, an array, a function) may be an object of any
+ *  kind with inherited fields, so it takes the entry points whose
+ *  ToPropertyDescriptor reads every object kind (dyn.definePropertyShapes
+ *  and its siblings). */
+export function isPlainObjectLiteral(expr: IrExpr): boolean {
+  if (expr.kind === "dynObjLit") return true;
+  if (expr.kind !== "dynFrom") return false;
+  const value = expr.value;
+  return value.kind === "dynObjLit" || value.type.kind === "record";
+}
+
+/** True when the expression is a plain property-descriptor map for
+ *  Object.defineProperties or Object.create: a plain object
+ *  (isPlainObjectLiteral) whose every field is a plain object too. A dyn
+ *  literal's field values are checked with isPlainObjectLiteral and a
+ *  record's fields by their types, since dynFrom boxes a record-typed field
+ *  into an ordinary object. A map with any other field (`{ a: view }`, where
+ *  `view` is a DataView or an array) takes the any-object entry points. */
+export function isPlainDescriptorMap(
+  expr: IrExpr,
+  getRecord: (shapeId: string) => IrRecordShape | undefined,
+): boolean {
+  if (!isPlainObjectLiteral(expr)) return false;
+  const literal = expr.kind === "dynFrom" ? expr.value : expr;
+  if (literal.kind === "dynObjLit")
+    return (literal.fields ?? []).every((field) => isPlainObjectLiteral(field.value));
+  if (literal.type.kind !== "record") return false;
+  const shape = getRecord(literal.type.shapeId);
+  return (
+    shape !== undefined &&
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.fields.every((field) => field.type.kind === "record")
+  );
+}
+
 function lowerObjectStaticCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -8543,7 +8586,12 @@ function lowerObjectStaticCall(
       if (descriptors.type.kind === "dyn")
         return {
           kind: "libCall",
-          fn: "dyn.objCreateWithProperties",
+          // A descriptor map built by an expression, or a literal map with a
+          // descriptor built by one, may hold an array, a function or an
+          // object with inherited fields.
+          fn: isPlainDescriptorMap(descriptors, (id) => lowerer.shapes.get(id))
+            ? "dyn.objCreateWithProperties"
+            : "dyn.objCreateWithPropertiesShapes",
           args: [proto, descriptors],
           type: DYN,
           loc,
@@ -8556,6 +8604,9 @@ function lowerObjectStaticCall(
   if (member === "assign") {
     const prototype = lowerClassPrototypeAssign(lowerer, call);
     if (prototype) return prototype;
+    // A standard-library prototype value as the target is a write through it.
+    if (call.arguments.nodes.length > 0)
+      fenceDatePrototypeWriteCall(lowerer, call.arguments.nodes[0]!);
     if (
       isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       call.arguments.nodes.length > 0 &&
@@ -8878,8 +8929,13 @@ function lowerObjectStaticCall(
     (member === "getOwnPropertyDescriptor" && call.arguments.nodes.length === 2)
   ) {
     if (call.arguments.nodes.some((a) => ts.isSpreadElement(a))) return null;
-    let target = tryLowerExpression(lowerer, call.arguments.nodes[0]!);
     const targetNode = call.arguments.nodes[0]!;
+    // Object.defineProperty/defineProperties over a standard-library prototype
+    // value: a typed Date never observes a dynamic definition there, so the
+    // write keeps the fence it reached before the value existed. The
+    // descriptor READ below is not a write and stays open.
+    if (member === "defineProperty") fenceDatePrototypeWriteCall(lowerer, targetNode);
+    let target = tryLowerExpression(lowerer, targetNode);
     // The checker gives C.prototype the instance type, but its lowered
     // value is the shared prototype table, not an instance to unbox.
     const prototypeTarget =
@@ -8956,7 +9012,10 @@ function lowerObjectStaticCall(
     if (descriptor.type.kind !== "dyn") return null;
     return {
       kind: "libCall",
-      fn: "dyn.defineProperty",
+      // A descriptor built by an expression may be an array, a function or an
+      // object with inherited fields, which only the any-object entry point
+      // reads; a plain object literal keeps the plain-object reader.
+      fn: isPlainObjectLiteral(descriptor) ? "dyn.defineProperty" : "dyn.definePropertyShapes",
       args: [target, key, descriptor],
       type: DYN,
       loc: locOf(call),
@@ -8974,6 +9033,10 @@ function lowerObjectStaticCall(
     call.arguments.nodes.length === 2 &&
     !call.arguments.nodes.some((a) => ts.isSpreadElement(a))
   ) {
+    // A standard-library prototype value as the target is a write through it,
+    // exactly like the defineProperty form above: a typed Date never observes
+    // a definition made on the dynamic prototype object.
+    fenceDatePrototypeWriteCall(lowerer, call.arguments.nodes[0]!);
     const prototype = lowerClassPrototypeDescriptors(lowerer, call, member);
     if (prototype) return prototype;
     let target = tryLowerExpression(lowerer, call.arguments.nodes[0]!);
@@ -9021,7 +9084,12 @@ function lowerObjectStaticCall(
       if (descs.type.kind === "dyn") {
         return {
           kind: "libCall",
-          fn: "dyn.defineProps",
+          // As for Object.create above: a descriptor map built by an
+          // expression, or a literal map with a descriptor built by one, takes
+          // the any-object entry point.
+          fn: isPlainDescriptorMap(descs, (id) => lowerer.shapes.get(id))
+            ? "dyn.defineProps"
+            : "dyn.definePropsShapes",
           args: [target, descs],
           type: DYN,
           loc: locOf(call),

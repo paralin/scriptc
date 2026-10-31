@@ -402,6 +402,13 @@ function buildLibFnSignatures() {
      * the may-throw seed set. */
     "dyn.defineProps": { argTypes: [DYN, DYN], result: DYN },
     "dyn.defineProperty": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** dyn.defineProps / dyn.defineProperty / dyn.objCreateWithProperties
+     * for a descriptor (or a property-descriptor map) built by an expression
+     * instead of a plain object literal: ToPropertyDescriptor accepts any
+     * object and reads each field through [[HasProperty]] and [[Get]]. */
+    "dyn.definePropsShapes": { argTypes: [DYN, DYN], result: DYN },
+    "dyn.definePropertyShapes": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "dyn.objCreateWithPropertiesShapes": { argTypes: [DYN, DYN], result: DYN },
     "dyn.getOwnPropertyDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "dyn.arrayProtoCall": { argTypes: [DYN, STRING, DYN], result: DYN },
     /** The same call through the array-like unit (JavaScript sources):
@@ -2222,6 +2229,8 @@ function buildLibFnSignatures() {
     "http.reqHttpVersionMajor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqHttpVersionMinor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqAborted": { argTypes: [HTTPREQ_T], result: BOOL },
+    "http.reqDestroyed": { argTypes: [HTTPREQ_T], result: BOOL },
+    "http.resDestroyed": { argTypes: [HTTPRES_T], result: BOOL },
     "http.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
     "http.resDestroy": { argTypes: [HTTPRES_T], result: VOID },
     "http.resOnClose": {
@@ -4213,6 +4222,10 @@ function buildLibFnSignatures() {
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** A standard library prototype object as a value (`Date.prototype` read
+     * in a JavaScript source), named by its constructor: the unit in
+     * scr_dyn_stdlib_prototype.c. */
+    "dyn.stdlibPrototype": { argTypes: [STRING], result: DYN },
     "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
     "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
     "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },
