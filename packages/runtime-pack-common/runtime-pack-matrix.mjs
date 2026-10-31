@@ -60,6 +60,8 @@ export const BASE_RUNTIME_SOURCES = [
 ];
 
 export const OPTIONAL_RUNTIME_SOURCES = [
+  // The call-time parameter bind of a generator (fn.generator.bindAtCall).
+  ["scr_gen_bind.c", "genBind"],
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile

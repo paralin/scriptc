@@ -97,6 +97,9 @@ export interface NativeLinkFeatures {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * scr_dyn_integrity.c. Absent (false) for programs without it. */
   dynIntegrityQueries?: boolean;
+  /** A generator that binds its parameters at the call: scr_gen_bind.c.
+   * Absent (false) for programs without one. */
+  genBind?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;

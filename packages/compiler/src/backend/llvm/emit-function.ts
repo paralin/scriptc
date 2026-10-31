@@ -912,6 +912,7 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
       `entry:`,
       ...argPackLines,
     ];
+    if (fn.generator.bindAtCall === true) emitter.declare(`declare void @scr_gen_bind(ptr)`);
     const genNew = coroBody && !emitter.wasi ? "scr_gen_new_stackless" : "scr_gen_new";
     if (genNew !== "scr_gen_new") emitter.declare(`declare ptr @${genNew}(ptr, ptr, ptr)`);
     const asyncGenNew =
@@ -933,6 +934,12 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
             `  call void @scr_gen_set_unstarted_return(ptr %gg, ptr @${mangleGenSourceClose(fn.name)})`,
           ]
         : []),
+      // fn.generator.bindAtCall: run the parameter prologue (destructuring,
+      // defaults, their throws) inside the call, as
+      // FunctionDeclarationInstantiation does, and stop at the barrier. A
+      // bind failure stays pending, so the caller's check unwinds and
+      // releases the generator just allocated.
+      ...(fn.generator.bindAtCall === true ? [`  call void @scr_gen_bind(ptr %gg)`] : []),
       `  ret ptr %gg`,
       `}`,
       ``,
