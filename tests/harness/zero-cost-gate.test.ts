@@ -443,7 +443,10 @@ test("the gate times the self-hosting fixtures as their own compile-time group",
     candidateMs: ratios.map((ratio) => Math.round(130_000 * ratio)),
     ratios,
   });
-  const rows = [fixture([1.0, 1.01]), { id: "self/cli", baselineMs: [600], candidateMs: [606], ratios: [1.01] }];
+  const rows = [
+    fixture([1.0, 1.01]),
+    { id: "self/cli", baselineMs: [600], candidateMs: [606], ratios: [1.01] },
+  ];
   // A fixture is not the self-hosted compiler: the two are judged apart.
   expect(timingGroups(rows).fixtures.map((row) => row.id)).toEqual(["fixture/llvm-emitter"]);
   expect(timingGroups(rows).self.map((row) => row.id)).toEqual(["self/cli"]);
@@ -463,7 +466,5 @@ test("the gate times the self-hosting fixtures as their own compile-time group",
   };
   const merged = mergeReports([shard]);
   expect(merged.report.verdict).toBe("fail");
-  expect(merged.report.failures).toEqual([
-    "fixtures compile time grew +280.00% (CI low +280.00%)",
-  ]);
+  expect(merged.report.failures).toEqual(["fixtures compile time grew +280.00% (CI low +280.00%)"]);
 });
