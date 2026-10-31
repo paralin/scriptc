@@ -1435,7 +1435,13 @@ export function lowerAsExpression(
   // so a union-valued member converts in a checked context — an arm the
   // asserted target excludes throws the catchable TypeError (a lying
   // assertion) instead of refusing the member (coercions.assertedOperand).
-  const assertedOperand = expr.expression.kind === ts.SyntaxKind.ObjectLiteralExpression;
+  // Parentheses and non-null assertions name the same literal
+  // (`({ ...message, content }) as T`). An inner assertion or `satisfies`
+  // carries its own operand context.
+  let assertedSource = expr.expression;
+  while (ts.isParenthesizedExpression(assertedSource) || ts.isNonNullExpression(assertedSource))
+    assertedSource = assertedSource.expression;
+  const assertedOperand = assertedSource.kind === ts.SyntaxKind.ObjectLiteralExpression;
   if (assertedOperand) lowerer.coercions.assertedOperand++;
   let inner: IrExpr;
   try {

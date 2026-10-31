@@ -23,6 +23,11 @@ function replaced(message: Message, content: (Mime | Text)[]): Message {
   return { ...message, content } as Message;
 }
 
+// Parentheses around the literal name the same operand.
+function parenthesized(message: Message, content: (Mime | Text)[]): Message {
+  return ({ ...message, content }) as Message;
+}
+
 const text: Text = { type: "text", text: "hello" };
 const mime: Mime = { type: "image", mimeType: "image/png", data: "AAAA" };
 
@@ -31,3 +36,4 @@ const kept = replaced({ role: "user", content: [text] }, [text, mime]);
 console.log(JSON.stringify(kept));
 console.log(kept.role, Array.isArray(kept.content) ? kept.content.length : "string");
 console.log(JSON.stringify(replaced({ role: "assistant", content: "plain" }, [mime])));
+console.log(JSON.stringify(parenthesized({ role: "user", content: [text] }, [mime])));
