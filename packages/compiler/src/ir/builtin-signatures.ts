@@ -4013,6 +4013,9 @@ function buildLibFnSignatures() {
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
     /** Installs the program's builtin-global lookup (global-values.ts). */
     "global.installValues": { argTypes: [DYN], result: VOID },
+    /** Installs the program's static-member lookup for builtin constructor
+     * values (builtin-statics.ts). */
+    "dyn.installBuiltinStatics": { argTypes: [DYN], result: VOID },
     /** The keys `for (key in globalThis)` visits, as a fresh object. */
     "global.forInObject": { argTypes: [], result: DYN },
     /** Node's navigator global (scr_node_builtin.c). */

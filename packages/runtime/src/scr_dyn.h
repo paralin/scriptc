@@ -1337,6 +1337,24 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
  * the exception pending). */
 extern SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args,
                                                   ScrDyn **result);
+/* Installed by scr_builtin_values.c when the program installs its
+ * static-member lookup (scr_builtin_statics_install): the static member
+ * `key` of the builtin constructor value `fn` (+1), or its property
+ * descriptor when `descriptor` is true; NULL without an exception when
+ * `fn` is no builtin constructor value or has no such member. Consulted
+ * only for keys `fn` has no own property for. */
+extern SCR_TL ScrDyn *(*scr_dyn_builtin_static_fn)(const ScrDyn *fn, const char *key, size_t key_len,
+                                                   bool descriptor);
+/* Installs the program's static-member lookup, a dyn function of the
+ * constructor value and the key answering the member's value or null, and
+ * for the key "" the name of a constructor the runtime does not intern
+ * (borrowed); the first installation stands. */
+void scr_builtin_statics_install(ScrDyn *lookup);
+/* Installed with scr_dyn_builtin_static_fn: called with a function value
+ * and its property table (borrowed) whenever the table is read for a
+ * change or reflection; a builtin constructor's static members become own
+ * properties of the table the first time. */
+extern SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table);
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key);
 /* A typed array's, Buffer's or DataView's own named property (+1), or NULL
  * without an exception when it has none. */

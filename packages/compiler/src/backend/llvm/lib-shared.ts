@@ -305,6 +305,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "console.dirDyn": "scr_console_dir_dyn",
   "global.native": "scr_global_native",
   "global.installValues": "scr_global_values_install",
+  "dyn.installBuiltinStatics": "scr_builtin_statics_install",
   "global.forInObject": "scr_global_for_in_object",
   "navigator.object": "scr_navigator_object",
   "navigator.language": "scr_navigator_language",
