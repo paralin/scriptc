@@ -1074,6 +1074,10 @@ function countLocalMentions(body: readonly IrStmt[], id: string): number {
 export class LlEmitter {
   /** Per-feature state (emitter-state.ts), indexed by each key's slot. */
   readonly moduleStates: unknown[] = [];
+  /** The names of the functions that `versionLoopBoundParameters` versions
+   * for int32 loop bounds: the ones that keep their name and call the copy
+   * and the fallback. Computed on first use. */
+  int32Versioned: Set<string> | null = null;
   localArrayReads = new Map<string, LocalArrayRead>();
   loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
