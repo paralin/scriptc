@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,10 +38,19 @@ interface InstallDigestRecord {
 
 /** The installed compiler package whose bytes define frontend identity. The
  * startup route also uses this location to keep metadata proofs from two
- * source checkouts sharing a cache root from standing in for one another. */
+ * source checkouts sharing a cache root from standing in for one another.
+ * A module reached through a symlinked package path (`--preserve-symlinks`
+ * keeps that spelling in module URLs) reports the directory the link names:
+ * retargeting the link selects a different install, so every proof and cache
+ * namespace built on this path has to follow it. */
 export function compilerImplementationRoot(): string {
   const moduleDir = dirname(fileURLToPath(import.meta.url));
-  return resolve(moduleDir, "..", "..");
+  const root = resolve(moduleDir, "..", "..");
+  try {
+    return realpathSync(root);
+  } catch {
+    return root;
+  }
 }
 
 function dependency(

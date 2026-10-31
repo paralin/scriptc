@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import {
   cp,
   mkdir,
@@ -14,6 +15,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, expect, test } from "vitest";
 import {
   compilerImplementationDependenciesStillMatch,
@@ -21,6 +23,8 @@ import {
 } from "./compiler-self-identity.js";
 
 const scratch: string[] = [];
+
+const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
   await Promise.all(scratch.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -217,4 +221,87 @@ test.skipIf(process.platform === "win32")(
     expect((await compilerImplementationIdentity(true, root)).digest).toBe(linked.digest);
     expect(await recordedDigest(link)).toBe(linked.digest);
   },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a retargeted package link names the install it points at",
+  async () => {
+    const holder = await fixture();
+    // `--preserve-symlinks` keeps the spelling that reached a module in its
+    // URL, so a package reached through a link reports the link as its root.
+    // The root a proof is written for has to be the directory the link names:
+    // retargeting the link selects another compiler, and a proof that still
+    // names the old root would keep replaying the old digest.
+    const built = await readFile(
+      join(import.meta.dirname, "../../dist/library/compiler-self-identity.js"),
+      "utf8",
+    );
+    const firstInstall = join(holder, "one");
+    const secondInstall = join(holder, "two");
+    for (const install of [firstInstall, secondInstall]) {
+      await mkdir(join(install, "dist", "library"), { recursive: true });
+      await writeFile(
+        join(install, "package.json"),
+        JSON.stringify({ name: "@scriptc/compiler", type: "module" }),
+      );
+      await writeFile(join(install, "dist", "library", "compiler-self-identity.js"), built);
+    }
+    await writeFile(join(secondInstall, "dist", "marker.txt"), "two\n");
+    const link = join(holder, "live");
+    await symlink(firstInstall, link);
+    const proofPath = join(holder, "proof.json");
+    const probe = join(holder, "probe.mjs");
+    // The same replay check `coverageCompilerIdentity` makes: a proof replays
+    // only while the root it names is the current one and its files match.
+    await writeFile(
+      probe,
+      [
+        "import { pathToFileURL } from 'node:url';",
+        "import { readFile, writeFile } from 'node:fs/promises';",
+        "const [link, proofPath] = process.argv.slice(2);",
+        "const module = await import(",
+        "  pathToFileURL(link + '/dist/library/compiler-self-identity.js').href,",
+        ");",
+        "const root = module.compilerImplementationRoot();",
+        "const identity = await module.compilerImplementationIdentity(true);",
+        "let replayed = null;",
+        "try {",
+        "  const proof = JSON.parse(await readFile(proofPath, 'utf8'));",
+        "  const matches = await module.compilerImplementationDependenciesStillMatch(",
+        "    proof.dependencies,",
+        "  );",
+        "  if (proof.root === root && matches) replayed = proof.digest;",
+        "} catch {",
+        "  // No proof yet.",
+        "}",
+        "if (replayed === null)",
+        "  await writeFile(",
+        "    proofPath,",
+        "    JSON.stringify({ root, digest: identity.digest, dependencies: identity.dependencies }),",
+        "  );",
+        "console.log(JSON.stringify({ root, digest: identity.digest, replayed }));",
+        "",
+      ].join("\n"),
+    );
+    const record = async (): Promise<{ root: string; digest: string; replayed: string | null }> => {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        ["--preserve-symlinks", probe, link, proofPath],
+        { encoding: "utf8" },
+      );
+      return JSON.parse(stdout);
+    };
+
+    const before = await record();
+    expect(before.root).toBe(await realpath(firstInstall));
+    expect(before.replayed).toBeNull();
+
+    await rm(link, { force: true });
+    await symlink(secondInstall, link);
+    const after = await record();
+    expect(after.root).toBe(await realpath(secondInstall));
+    expect(after.replayed).toBeNull();
+    expect(after.digest).not.toBe(before.digest);
+  },
+  60_000,
 );
