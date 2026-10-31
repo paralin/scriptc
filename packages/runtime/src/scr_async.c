@@ -1332,8 +1332,18 @@ static SCR_TL unsigned long scr_interval_next_id = 1;
 static SCR_TL unsigned long scr_firing_id = 0; /* interval currently running */
 /* The immediate whose callback is running (0 outside one). */
 static SCR_TL unsigned long scr_immediate_firing = 0;
+#ifdef SCR_NODE_ISLANDS
+/* The handle of the timer or immediate running on the hosted loop (0
+ * outside one). Kept out of the pair above: the hosted loop's timer lives
+ * in Node, so clear/ref/refresh/hasRef of this id must keep routing through
+ * the job table rather than the runtime's own queues. */
+static SCR_TL unsigned long scr_hosted_firing = 0;
+#endif
 
 double scr_timer_running_handle(void) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_hosted_firing != 0) return (double)scr_hosted_firing;
+#endif
   return (double)(scr_immediate_firing != 0 ? scr_immediate_firing : scr_firing_id);
 }
 static SCR_TL bool scr_firing_cleared = false;
@@ -5353,7 +5363,10 @@ void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
     ScrClosure *cb = (ScrClosure *)j->p;
     j->firing = true;
     j->refreshed = false;
+    unsigned long firing = scr_hosted_firing;
+    scr_hosted_firing = j->id;
     ((void (*)(ScrClosure *))cb->fn)(cb);
+    scr_hosted_firing = firing;
     j = &scr_hjobs[token - 1];
     j->firing = false;
     if (j->cleared) {
@@ -5383,8 +5396,12 @@ void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
     if (j == NULL) return;
     ScrClosure *cb = (ScrClosure *)j->p;
     scr_hmap_delete(j->id * 2 + 1);
+    unsigned long id = j->id;
     scr_hjob_free(token);
+    unsigned long firing = scr_hosted_firing;
+    scr_hosted_firing = id;
     ((void (*)(ScrClosure *))cb->fn)(cb);
+    scr_hosted_firing = firing;
     scr_closure_release(cb);
     break;
   }

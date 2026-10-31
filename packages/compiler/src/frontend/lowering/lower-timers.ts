@@ -75,6 +75,10 @@ export function adaptZeroArgTimerCallback(
               expr: {
                 kind: "callValue",
                 callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+                // The wrapper is the callback the timer calls, so it runs
+                // with the timer's receiver on the ambient stack; the call
+                // forwards it so the original callback reads the same one.
+                receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
                 args: [],
                 type: fromT.ret,
                 loc,
@@ -137,6 +141,9 @@ export function adaptZeroArgTimerCallback(
             expr: {
               kind: "callValue",
               callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+              // As in the return-dropping wrapper: the callback sees the
+              // receiver the timer called the wrapper with.
+              receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
               args: [dynUndefinedExpr(loc)],
               type: VOID,
               loc,
@@ -654,7 +661,8 @@ function untypedTimerHandle(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcL
 /** A JavaScript timer callback that may read `this` runs with `this`
  * bound to its handle, as Node calls it with the Timeout or Immediate
  * (scr_timer_this_callback). Arrows, and function expressions and
- * declarations whose bodies never read `this`, keep the plain callback;
+ * declarations that never read `this` in the body or in a parameter
+ * initializer, keep the plain callback;
  * any other value (test/common's mustCall wrapper, which forwards `this`)
  * is bound. TypeScript files keep plain callbacks: a plain function's
  * `this` is refused there. */
@@ -671,13 +679,21 @@ function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
   let callback = node;
   while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
   if (ts.isArrowFunction(callback)) return false;
-  if (ts.isFunctionExpression(callback)) return readsOwnThis(callback.body);
+  if (ts.isFunctionExpression(callback)) return ownThisIn(callback);
   if (ts.isIdentifier(callback)) {
     const declaration = lowerer.resolveValueSymbol(callback)?.valueDeclaration;
     if (declaration && ts.isFunctionDeclaration(declaration) && declaration.body)
-      return readsOwnThis(declaration.body);
+      return ownThisIn(declaration);
   }
   return true;
+}
+
+/** Whether a function reads its own `this`: in its body, or in the
+ * initializer of a parameter, which runs at entry with the same receiver
+ * (`function (x = this) {}` called with no arguments). */
+function ownThisIn(fn: ts.FunctionExpression | ts.FunctionDeclaration): boolean {
+  if ((fn.parameters?.nodes ?? []).some((parameter) => readsOwnThis(parameter))) return true;
+  return fn.body !== undefined && readsOwnThis(fn.body);
 }
 
 /** Whether `node` reads the enclosing function's `this`: a `this` outside

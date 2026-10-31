@@ -2,7 +2,8 @@
 // A timer callback runs with `this` bound to its Timeout or Immediate, as
 // Node calls it: a plain function and a function value that forwards
 // `this` (test/common's mustCall wrapper) see the handle the call returned,
-// also with trailing arguments and for a setTimeout called as a statement.
+// also with trailing arguments, for a setTimeout called as a statement, and
+// for a callback whose signature the timer adapts.
 // clearInterval(this) stops an interval from inside it, and the clear
 // functions accept the handle a callback reads as its own `this`. Arrows
 // keep the module's `this`, and a nested plain call sees undefined.
@@ -49,6 +50,29 @@ function plain() {
 setTimeout(function () {
   seen.push(['nested plain call', plain() === undefined]);
 }, 3);
+// The adapted signatures — a return value to drop, an argument to supply,
+// a default parameter to run — with the wrapper forwarding the receiver.
+function returnsValue() {
+  seen.push(['returning declaration', this === returningDeclaration]);
+  return 3;
+}
+const returningDeclaration = setTimeout(returnsValue, 1);
+const returningExpression = setTimeout(function () {
+  seen.push(['returning expression', this === returningExpression]);
+  return true;
+}, 1);
+const asyncCallback = setTimeout(async function () {
+  seen.push(['async', this === asyncCallback]);
+}, 1);
+const oneParameter = setTimeout(function (x) {
+  seen.push(['one parameter', this === oneParameter, x === undefined]);
+}, 1);
+const defaultParameter = setTimeout(function (x = this) {
+  seen.push(['default parameter', x === defaultParameter]);
+}, 1);
+const defaultParameterImmediate = setImmediate(function (x = this) {
+  seen.push(['immediate default parameter', x === defaultParameterImmediate]);
+});
 
 setTimeout(() => {
   // Sorted, so the order the timers fire in does not decide the output.
