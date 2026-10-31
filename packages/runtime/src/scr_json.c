@@ -2125,6 +2125,14 @@ ScrDyn *scr_dyn_arr_custom_member(const ScrDyn *d, const char *key, size_t key_l
   return NULL;
 }
 
+/* Whether the builtin Array.prototype object exists and carries `key`
+ * before the method table installs. A read that already went through that
+ * prototype answered such a name; the inherited-read fallback must not read
+ * it (or run a getter on it) a second time. */
+bool scr_dyn_array_prototype_owns(const ScrStr *key) {
+  return scr_builtin_array_prototype != NULL && scr_dyn_has_own(scr_builtin_array_prototype, key);
+}
+
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key) {
   if (d->v.arr.properties && scr_dyn_obj_get(d->v.arr.properties, key->data, key->len))
     return scr_dyn_obj_read_receiver(d->v.arr.properties, key->data, key->len, d);

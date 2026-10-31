@@ -2224,13 +2224,17 @@ static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key) {
     if (d->null_proto || d->prototype || scr_dyn_has_own(d, key)) return NULL;
     /* An array literal's implicit prototype is the object Array.prototype
      * installs its methods on, so reading `[].slice` answers the function
-     * `Array.prototype.slice` reads as. The prototype installs them on
-     * first use, exactly as a read of Array.prototype does. */
+     * `Array.prototype.slice` reads as. The read that reached here already
+     * went through that prototype, so a name it carries — a program's own
+     * definition, a getter included — has already run once with the array
+     * as its receiver: the undefined read stands instead of a second read
+     * running the getter again. Otherwise the table installs on first use,
+     * exactly as a read of Array.prototype does. */
     if (dyn_array_prototype_defines(key)) {
+      if (scr_dyn_array_prototype_owns(key)) return NULL;
       ScrDyn *prototype = scr_dyn_array_prototype();
-      ScrDyn *method = scr_dyn_obj_read(prototype, key->data, key->len);
       scr_dyn_release(prototype);
-      return method;
+      return scr_dyn_arr_named_get(d, key);
     }
     return dyn_inherited_from(NULL, DYN_INHERIT_VALUE_OF | DYN_INHERIT_OWN, key);
   case SCR_DYN_FUNC:
@@ -2484,6 +2488,14 @@ ScrDyn *scr_dyn_array_prototype(void) {
        i++) {
     ScrStr *name = scr_str_new(dyn_array_prototype_methods[i].name,
                                strlen(dyn_array_prototype_methods[i].name));
+    /* A name the program already installed on Array.prototype keeps the
+     * program's descriptor. A JavaScript prototype carries its methods
+     * before the program runs, so a program's definition replaces one; the
+     * lazily installed table must not replace the program's definition. */
+    if (scr_dyn_has_own(prototype, name)) {
+      scr_str_release(name);
+      continue;
+    }
     ScrDyn *method;
     if (!strcmp(dyn_array_prototype_methods[i].name, "values"))
       method = scr_dyn_array_values_function();
