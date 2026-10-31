@@ -84,11 +84,14 @@ jobs:
     permissions:
       contents: read
     outputs:
-      linux: ${{ steps.lanes.outputs.linux }}
-      macos: ${{ steps.lanes.outputs.macos }}
-      effects: ${{ steps.lanes.outputs.effects }}
-      bootstrap: ${{ steps.lanes.outputs.bootstrap }}
-      profile: ${{ steps.lanes.outputs.profile }}
+      # A pull request runs the base revision's lane selector, and one that
+      # predates a lane emits nothing for it; that lane is off then, so its job
+      # is skipped and the required check accepts the skip.
+      linux: ${{ steps.lanes.outputs.linux || 'false' }}
+      macos: ${{ steps.lanes.outputs.macos || 'false' }}
+      effects: ${{ steps.lanes.outputs.effects || 'false' }}
+      bootstrap: ${{ steps.lanes.outputs.bootstrap || 'false' }}
+      profile: ${{ steps.lanes.outputs.profile || 'false' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'pull_request'
