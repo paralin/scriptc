@@ -257,6 +257,22 @@ describe("runtime pack manifests", () => {
     expect(second).not.toBe(first);
   });
 
+  test("the linker environment follows the driver file itself", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scriptc-linker-driver-"));
+    const driver = join(root, "clang");
+    // An explicit driver keeps the probe results constant, so the driver's
+    // own file identity is the only thing that differs between the two calls.
+    const env = { SCRIPTC_LINKER: driver, PATH: root };
+    await writeFile(driver, "#!/bin/sh\nexit 2\n");
+    await chmod(driver, 0o755);
+    const before = await executableLinkerEnvironmentFingerprint(env);
+    // A different file at the same spelling, as a driver replacement leaves.
+    await writeFile(driver, "#!/bin/sh\nexit 33\n");
+    await chmod(driver, 0o755);
+    const after = await executableLinkerEnvironmentFingerprint(env);
+    expect(after).not.toBe(before);
+  });
+
   test.skipIf(process.platform !== "linux")(
     "the linker environment follows the ld.lld beside the driver",
     async () => {

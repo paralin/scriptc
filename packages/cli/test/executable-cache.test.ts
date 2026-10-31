@@ -199,7 +199,11 @@ test.skipIf(process.platform === "win32")(
   120_000,
 );
 
-test.skipIf(process.platform === "win32")(
+// A driver outside the system prefix can only publish an executable on Linux.
+// Darwin trusts its system shim alone (runtime-pack.test.ts covers that rule),
+// so every build in this scenario links again there and the stored-driver
+// assertions below would compare two different link results.
+test.skipIf(process.platform !== "linux")(
   "replacing the driver file invalidates the stored executable",
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-cli-executable-driver-"));
