@@ -5082,9 +5082,13 @@ function buildLibFnSignatures() {
      * 'not supported yet' Error. */
     "insp.dynHidden": { argTypes: [DYN, F64], result: STRING },
     "insp.begin": { argTypes: [F64], result: VOID },
-    /** util.inspect's breakLength, compact (-1 for false) and sorted for the
-     * renders that follow; the call site restores 80, 3 and false afterwards. */
-    "insp.layout": { argTypes: [F64, F64, BOOL], result: VOID },
+    /** util.inspect's breakLength, compact (-1 for false), sorted and
+     * maxArrayLength (Infinity for null) for the renders that follow; the
+     * call site restores 80, 3, false and 100 afterwards. */
+    "insp.layout": { argTypes: [F64, F64, BOOL, F64], result: VOID },
+    /** The render's maxArrayLength, which the array, Map and Set traversals
+     * read: the option applies at every nesting level. */
+    "insp.maxArrayLength": { argTypes: [], result: F64 },
     "insp.entry": { argTypes: [STRING, BOOL], result: VOID },
     // Circular references: the receiver slot is program-dependent (any
     // cycle-capable record/array/map/class type — the insp.error precedent).
