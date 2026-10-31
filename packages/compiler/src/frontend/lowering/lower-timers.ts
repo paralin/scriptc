@@ -693,7 +693,7 @@ function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
       !declaration ||
       !ts.isVariableDeclaration(declaration) ||
       !declaration.initializer ||
-      (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0 ||
       seen.has(declaration)
     )
       return true;
