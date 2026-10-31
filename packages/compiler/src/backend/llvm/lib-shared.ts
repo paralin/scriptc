@@ -803,6 +803,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.errorCause": "scr_insp_error_cause",
   "insp.begin": "scr_insp_begin",
   "insp.layout": "scr_insp_layout",
+  "insp.maxArrayLength": "scr_insp_max_array_length",
   "insp.entry": "scr_insp_entry",
   "insp.key": "scr_insp_key",
   "insp.moreItems": "scr_insp_more_items",
