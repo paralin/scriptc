@@ -2087,8 +2087,8 @@ export function lowerInExpression(
     };
   }
   // A key the type does not declare is an own key of a linked copy's
-  // source or of a kept checked source (record-links.ts); the helper call
-  // evaluates the receiver once.
+  // source or of a kept source (record-links.ts, and the hasOwn helper's
+  // kept width spread answer); the helper call evaluates the receiver once.
   if (!inherited && recordMayKeepSource(lowerer, recv.type))
     return {
       kind: "call",
@@ -2097,7 +2097,10 @@ export function lowerInExpression(
       type: BOOL,
       loc,
     };
-  return staticAnswerAfter(recv, inherited, loc);
+  // Otherwise the answer is static; the key-order pass still reads the
+  // site as a presence test of the receiver's keys.
+  const answer = staticAnswerAfter(recv, inherited, loc);
+  return inherited ? answer : lowerer.keyOrder.sourceProbe(answer, recv, key);
 }
 
 /** A statically-decided `in` answer: a side-effect-free receiver folds away,

@@ -627,6 +627,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "strdec.next": "scr_strdec_next",
   "strdec.end": "scr_strdec_end",
   "strdec.encoding": "scr_strdec_encoding",
+  "strdec.encodingValue": "scr_strdec_encoding_value",
   "stats.isFile": "scr_stats_is_file",
   "stats.isDirectory": "scr_stats_is_dir",
   "stats.isSymbolicLink": "scr_stats_is_symlink",
@@ -683,6 +684,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "bigstats.birthtime": "scr_stats_big_birthtime",
   "text.decode": "scr_text_decode",
   "bytes.bufferSource": "scr_bytes_buffer_source",
+  "text.decoderInput": "scr_text_decoder_input",
+  "text.decoderFlag": "scr_text_decoder_flag",
+  "text.decodeStreamOption": "scr_text_decode_stream_option",
+  "text.decoderEncodingOptions": "scr_text_decoder_encoding_options",
   "bytes.copyBrand": "scr_bytes_copy_brand",
   "text.decodeBufferSource": "scr_text_decode_buffer_source",
   "text.decodeOptions": "scr_text_decode_options",
@@ -816,6 +821,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "record.sourceHas": "scr_record_source_has",
   "record.sourceSpread": "scr_record_source_spread",
   "record.sourceShare": "scr_record_source_share",
+  "record.sourceNote": "scr_record_source_note",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
   // pathToFileURL flavor, and sp.fromPairs throw catchably (may-throw).
@@ -889,8 +895,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // codec unit. qs.parse is special-cased in emitLibCall (the result
   // dictionary's construction).
   "qs.escape": "scr_qs_escape",
+  "qs.escapeValue": "scr_qs_escape_value",
   "qs.unescape": "scr_qs_unescape",
   "qs.stringify": "scr_qs_stringify",
+  "qs.stringifyCustom": "scr_qs_stringify_custom",
+  "qs.separator": "scr_qs_separator",
+  "qs.unescapeBuffer": "scr_qs_unescape_buffer",
   // Timer handle bookkeeping (never throws; the comma-shaped chaining
   // forms are special-cased in emitLibCall).
   "timers.hasRef": "scr_timer_has_ref",
@@ -1186,6 +1196,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.defineProperty": "scr_dyn_define_property",
   "dyn.getOwnPropertyDescriptor": "scr_dyn_get_own_property_descriptor",
   "dyn.arrayProtoCall": "scr_dyn_array_proto_call",
+  "dyn.arrayLikeProtoCall": "scr_dyn_array_like_call",
+  "dyn.builtinPrototype": "scr_dyn_builtin_prototype",
   "dyn.promiseAll": "scr_dyn_promise_all",
   "dyn.promiseAllSettled": "scr_dyn_promise_all_settled",
   "dyn.promiseAny": "scr_dyn_promise_any",
@@ -1857,6 +1869,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "timers.queueMicrotaskDyn": "scr_queue_microtask_dyn",
   "timers.setImmediateFnValue": "scr_set_immediate_dyn_value",
   "timers.immediatePromise": "scr_immediate_promise",
+  "timers.userDelay": "scr_timer_user_delay",
 };
 
 /** The mock-aware entry points (scr_test.c) that the timer calls of a

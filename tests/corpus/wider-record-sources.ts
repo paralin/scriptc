@@ -168,3 +168,21 @@ try {
 const untyped = { a: 1, b: 2, valueOf(): unknown { return valueOfCalls > 1 ? null : 5; } };
 const untypedOne: Plain = untyped;
 console.log("" + untypedOne, (valueOfCalls++, "" + untypedOne));
+
+// A copy narrowed from a width spread that kept its source's other
+// properties sees them too.
+type Three = { a: number; b: number; c: number };
+function three(): Three {
+  return { a: 1, b: 2, c: 3 };
+}
+const spreadTwo: Two = { ...three() };
+const spreadOne: Plain = spreadTwo;
+const spreadKeys: string[] = [];
+for (const k in spreadOne) spreadKeys.push(k);
+console.log(
+  Object.keys(spreadOne).join(","),
+  JSON.stringify(spreadOne),
+  "c" in spreadOne,
+  spreadKeys.join(","),
+  Object.values(spreadOne).join(","),
+);

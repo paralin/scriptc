@@ -526,8 +526,12 @@ function scanModule(
       expr: (e) => {
         if (e.kind === "dynCheck") keptSourceTypes(lowerer, e.type, sourced, seen);
         // A literal that starts with a spread of a record that kept a
-        // source keeps one too.
-        if (e.kind === "libCall" && e.fn === "record.sourceSpread") {
+        // source keeps one too, as does a width spread or clone the
+        // key-order pass keeps (record.sourceNote).
+        if (
+          e.kind === "libCall" &&
+          (e.fn === "record.sourceSpread" || e.fn === "record.sourceNote")
+        ) {
           const built = e.args[0]?.type;
           if (built?.kind === "record" && recordMayKeepSource(lowerer, built))
             sourced.add(built.shapeId);
