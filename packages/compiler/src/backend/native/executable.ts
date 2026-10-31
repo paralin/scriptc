@@ -462,9 +462,6 @@ const RUNTIME_DEFINES: readonly {
   when: (opts: CcOptions) => boolean | undefined;
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
-  // scr_json.c's SCR_JS_TIER build exports the dynamic tier's cache primitives; only
-  // programs with dynamic-tier code select it.
-  { define: "SCR_JS_TIER", when: (opts) => opts.dynTier === true },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
   // scr_json.c's view slot answers NULL for a field a partial record view
   // does not have; only a program with a partial assertion selects it.
@@ -486,8 +483,8 @@ const RUNTIME_DEFINES: readonly {
   // scr_events.c's typed process output write slot.
   { define: "SCR_STDIO_WRITE_SLOT", when: (opts) => opts.stdioWriteSlot },
   // scr_async.c's native promise reactions, which the web streams unit uses,
-  // scr_json.c's and scr_dyn_builtin_class.c's instanceof over its classes,
-  // and scr_fetch.c's bodies of its streams.
+  // scr_dyn_builtin_class.c's instanceof over its classes, and scr_fetch.c's
+  // bodies of its streams.
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },

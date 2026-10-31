@@ -1691,7 +1691,7 @@ function scanRuntimeFeatures(
   } else if (keepGoing()) everyModuleNode(mod, { expr, stmt: keepGoing, type });
   for (const { name, scan } of scans) if (scan.result()) features[name] = true;
   // Inline-cache sites of dynamic-tier functions use the tier's caches
-  // (scr_js_object.c, with the SCR_JS_TIER build of scr_json.c).
+  // (scr_js_object.c).
   if (!features.dynTier && mod.functions.some((fn) => fn.tier === "dynamic")) {
     const sites = new JsIcSites(mod);
     features.dynTier = mod.functions.some((fn) => fn.tier === "dynamic" && hasJsIcSite(fn, sites));

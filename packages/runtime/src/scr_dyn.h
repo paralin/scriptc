@@ -2259,6 +2259,17 @@ ScrDyn *scr_dyn_handle_class_member(ScrDynHandleTag tag, void *h, const char *ke
  * NULL with the exception pending. */
 ScrDyn *scr_dyn_handle_class_method_call(const ScrDynHandleOps *ops, ScrDyn *self, const char *method,
                                          ScrDyn *const *args, size_t argc);
+/* The class operations scr_json.c's handle paths reach (instanceof, and a
+ * method value's receiver and call). scr_dyn_handle_class.c installs them
+ * from a constructor, so scr_json.c builds one object whether or not a
+ * program links that unit; NULL in programs without handle classes. */
+typedef struct ScrDynHandleClassOps {
+  ScrDyn *(*prototype_of)(const ScrDyn *handle);
+  bool (*receiver)(ScrDynHandleTag klass_tag, ScrDyn *self, ScrDyn **out);
+  ScrDyn *(*method_call)(const ScrDynHandleOps *ops, ScrDyn *self, const char *method,
+                         ScrDyn *const *args, size_t argc);
+} ScrDynHandleClassOps;
+extern const ScrDynHandleClassOps *scr_dyn_handle_class_ops;
 
 /* The operations a Transform handle gives the stream unit (scr_stream.c):
  * the slot where the handle keeps its stream (+1) with the stream's
@@ -2481,8 +2492,7 @@ long scr_dyn_live_count(void);
 #endif
 
 /* Checked-object primitives the dynamic tier's inline caches build on
- * (scr_js_object.c). They exist only in the SCR_JS_TIER build of
- * scr_json.c, which programs with dynamic-tier code link. */
+ * (scr_js_object.c). */
 /* The builtin Object.prototype node, or NULL before its first use. */
 const ScrDyn *scr_dyn_tier_object_prototype(void);
 /* A read site's answer for a native array's length or a native iterator's

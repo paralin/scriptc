@@ -69,6 +69,11 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
 #include <stdlib.h>
 #include <string.h>
 
+/* Set by scr_node_island_handle.c in programs that link the island units. */
+const ScrNiDynOps *scr_ni_dyn_ops = NULL;
+/* Set by scr_dyn_handle_class.c in programs with handle classes (web streams). */
+const ScrDynHandleClassOps *scr_dyn_handle_class_ops = NULL;
+
 /* Live dyn-node count for the RC audit lane (-DSCR_RC_AUDIT); same contract
  * as scr_str_live_count in scr_string.c. */
 #ifdef SCR_RC_AUDIT
@@ -2653,18 +2658,16 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     return scr_dyn_object_prototype();
   }
   if (object == scr_builtin_array_prototype) return scr_dyn_object_prototype();
-#ifdef SCR_NODE_ISLANDS
   /* An island object: its V8 prototype, through the __proto__ accessor
    * (undefined for an object without Object.prototype: null). */
-  if (scr_ni_is_handle(object)) {
-    ScrDyn *proto = scr_ni_get_str(object, "__proto__", 9);
+  if (scr_ni_dyn_handle(object)) {
+    ScrDyn *proto = scr_ni_dyn_ops->get_str(object, "__proto__", 9);
     if (proto != NULL && proto->kind == SCR_DYN_UNDEF) {
       scr_dyn_release(proto);
       return scr_dyn_new_null();
     }
     return proto;
   }
-#endif
   if (object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_UNDEF) {
     static const char message[] = "Cannot convert undefined or null to object";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -5271,9 +5274,7 @@ static bool scr_native_iterator_over(const ScrDyn *value, unsigned kind);
 /* Node util.types reads internal brands, never user properties or prototypes. */
 bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (!value) return false;
-#ifdef SCR_NODE_ISLANDS
-  if (scr_ni_is_handle(value)) return scr_ni_util_type_is(value, probe);
-#endif
+  if (scr_ni_dyn_handle(value)) return scr_ni_dyn_ops->util_type_is(value, probe);
 
 #define PROBE(name) (probe->len == sizeof(name) - 1 && memcmp(probe->data, name, sizeof(name) - 1) == 0)
   if (PROBE("isAnyArrayBuffer")) return scr_buffer_storage_is(value);
@@ -5846,9 +5847,7 @@ static bool scr_dyn_instanceof_function(const ScrDyn *value) {
 }
 
 bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const ScrStr *refusal) {
-#ifdef SCR_NODE_ISLANDS
-  if (scr_ni_is_handle(callee)) return scr_ni_instanceof((ScrDyn *)value, (ScrDyn *)callee) == 1;
-#endif
+  if (scr_ni_dyn_handle(callee)) return scr_ni_dyn_ops->instance_of((ScrDyn *)value, (ScrDyn *)callee) == 1;
   if (!callee || callee->kind != SCR_DYN_FUNC) {
     static const char message[] = "Right-hand side of 'instanceof' is not callable";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -5893,16 +5892,13 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
     if (!prototype) return false; /* the read threw: pending */
     if (prototype->kind == SCR_DYN_OBJ) {
       bool found = false;
-#ifdef SCR_HANDLE_CLASSES
       /* A handle of a class (scr_dyn_handle_class.c) has the class's
-       * prototype; this build is the one programs with such classes link. */
-      ScrDyn *handle_prototype = value->kind == SCR_DYN_HANDLE ? scr_dyn_handle_class_prototype_of(value) : NULL;
+       * prototype. */
+      ScrDyn *handle_prototype = value->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops
+                                     ? scr_dyn_handle_class_ops->prototype_of(value)
+                                     : NULL;
       if (handle_prototype || value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_FUNC) {
         ScrDyn *current = handle_prototype ? handle_prototype : scr_dyn_get_prototype((ScrDyn *)value);
-#else
-      if (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_FUNC) {
-        ScrDyn *current = scr_dyn_get_prototype((ScrDyn *)value);
-#endif
         while (current && current->kind != SCR_DYN_NULL) {
           if (current == prototype) {
             found = true;
@@ -6723,15 +6719,6 @@ ScrDyn *scr_dyn_class_prototype(ScrDyn *value, ScrDyn *base) {
  * compiled per signature). Args borrowed; result owned (+1) or NULL with
  * the exception pending. */
 ScrDyn *scr_dyn_call(const ScrDyn *d, ScrDyn *const *args, size_t argc, const char *what) {
-#ifdef SCR_NODE_ISLANDS
-  /* An island function: called in Node with the ambient receiver. */
-  if (scr_ni_is_handle(d) && scr_ni_is_function(d)) {
-    ScrDyn *receiver = scr_dyn_this_get();
-    ScrDyn *result = scr_ni_call((ScrDyn *)d, receiver, args, argc);
-    scr_dyn_release(receiver);
-    return result;
-  }
-#endif
   if (d->kind == SCR_DYN_PROXY && scr_dyn_is_callable(d->v.proxy.target)) {
     ScrDyn *trap = scr_dyn_proxy_trap(d, "apply");
     if (scr_exc_pending()) return NULL;
@@ -6746,7 +6733,16 @@ ScrDyn *scr_dyn_call(const ScrDyn *d, ScrDyn *const *args, size_t argc, const ch
     return result;
   }
 
-  if (d->kind != SCR_DYN_FUNC) {
+  /* Not a native function: an island function, or the TypeError. The
+   * native call stays the fall-through path. */
+  if (__builtin_expect(d->kind != SCR_DYN_FUNC, 0)) {
+    /* An island function: called in Node with the ambient receiver. */
+    if (scr_ni_dyn_handle(d) && scr_ni_dyn_ops->is_function(d)) {
+      ScrDyn *receiver = scr_dyn_this_get();
+      ScrDyn *result = scr_ni_dyn_ops->call((ScrDyn *)d, receiver, args, argc);
+      scr_dyn_release(receiver);
+      return result;
+    }
     ScrJsonBuf b;
     scr_jb_init(&b);
     scr_jb_puts(&b, what);
@@ -7276,20 +7272,16 @@ static ScrDyn *scr_dynh_method_call(ScrClosure *closure, ScrDyn *const *args, si
   const ScrDynHandleOps *ops = scr_dyn_handle_ops(tag);
   ScrDyn *self = scr_dyn_this_get();
   ScrDyn *result;
-#ifdef SCR_HANDLE_CLASSES
   /* A class's method value reaches the class's method past the handle's
    * own properties, and runs on the instance a handle of an alias tag
-   * stands for; this build is the one programs with such classes link. */
+   * stands for. */
   ScrDyn *receiver = NULL;
-  if (scr_dyn_handle_class_receiver(tag, self, &receiver)) {
-    result = receiver ? scr_dyn_handle_class_method_call(ops, receiver, method->name, args, argc) : NULL;
+  if (scr_dyn_handle_class_ops && scr_dyn_handle_class_ops->receiver(tag, self, &receiver)) {
+    result = receiver ? scr_dyn_handle_class_ops->method_call(ops, receiver, method->name, args, argc) : NULL;
     scr_dyn_release(receiver);
-  } else {
-#else
-  if (self->kind == SCR_DYN_HANDLE && self->v.handle.tag == tag) {
+  } else if (!scr_dyn_handle_class_ops && self->kind == SCR_DYN_HANDLE && self->v.handle.tag == tag) {
     result = ops->invoke(self->v.handle.ptr, self, method->name, args, argc, method->name);
   } else {
-#endif
     const char *message = method->invalid_this ? method->invalid_this
                           : ops->invalid_this  ? ops->invalid_this
                                                : "Illegal invocation";
@@ -7975,10 +7967,8 @@ void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name) {
 /* Ordinary native function constructors retain their live prototype table.
  * A constructor may replace the fresh receiver with another object. */
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
-#ifdef SCR_NODE_ISLANDS
-  if (scr_ni_is_handle(callee))
-    return scr_ni_construct((ScrDyn *)callee, args->v.arr.items, args->v.arr.len);
-#endif
+  if (scr_ni_dyn_handle(callee))
+    return scr_ni_dyn_ops->construct((ScrDyn *)callee, args->v.arr.items, args->v.arr.len);
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj ||
       (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) != SCR_CLOSURE_KIND_OWN_PROTOTYPE)
     return scr_bytes_construct(callee, args, what);
@@ -8446,7 +8436,6 @@ static ScrDyn *scr_native_iterator_new(ScrDyn *source) {
   return result;
 }
 
-#ifdef SCR_JS_TIER
 /* A read site's answer for a receiver without a layout whose property is
  * plain data the runtime holds directly: a native array's length (the
  * generic read would build its checked view first) and a native iterator's
@@ -8461,7 +8450,6 @@ ScrDyn *scr_dyn_tier_unshaped_get(const ScrDyn *receiver, const ScrStr *key) {
     return scr_native_iterator_get(receiver->v.handle.ptr, key->data, key->len);
   return NULL;
 }
-#endif
 
 static ScrDyn *scr_native_collection_iterator(ScrDyn *source, unsigned selection) {
   ScrDyn *result = scr_native_iterator_new(source);
@@ -10108,9 +10096,6 @@ bool scr_dyn_truthy(const ScrDyn *d) {
  * null answers "object" — JS's oldest wart, preserved. */
 ScrStr *scr_dyn_typeof(const ScrDyn *d) {
   const char *s;
-#ifdef SCR_NODE_ISLANDS
-  if (scr_ni_is_handle(d)) return scr_ni_typeof((ScrDyn *)d);
-#endif
   if (d->kind == SCR_DYN_PROXY) return scr_dyn_typeof(d->v.proxy.target);
   if (d->kind == SCR_DYN_TYPED_REF) {
     if ((d->v.typed_ref.type_key_len >= 7 &&
@@ -10126,11 +10111,14 @@ ScrStr *scr_dyn_typeof(const ScrDyn *d) {
 
   switch (d->kind) {
   case SCR_DYN_UNDEF: s = "undefined"; break;
+  case SCR_DYN_HANDLE:
+    if (scr_ni_dyn_handle(d)) return scr_ni_dyn_ops->type_of((ScrDyn *)d);
+    s = "object";
+    break;
   case SCR_DYN_NULL:
   case SCR_DYN_OBJ:
   case SCR_DYN_ARR:
   case SCR_DYN_BYTES:
-  case SCR_DYN_HANDLE:
   case SCR_DYN_PROMISE:
   case SCR_DYN_PROXY:
   case SCR_DYN_TYPED_REF: s = "object"; break; /* handled above */
@@ -10147,10 +10135,9 @@ ScrStr *scr_dyn_typeof(const ScrDyn *d) {
 
 bool scr_dyn_is_callable(const ScrDyn *value) {
   while (value->kind == SCR_DYN_PROXY) value = value->v.proxy.target;
-#ifdef SCR_NODE_ISLANDS
-  if (scr_ni_is_handle(value)) return scr_ni_is_function(value);
-#endif
-  return value->kind == SCR_DYN_FUNC || scr_dyn_ref_typeof_is(value, "function");
+  if (value->kind == SCR_DYN_FUNC) return true;
+  if (scr_ni_dyn_handle(value)) return scr_ni_dyn_ops->is_function(value);
+  return scr_dyn_ref_typeof_is(value, "function");
 }
 
 int scr_dyn_function_kind(const ScrDyn *value) {
@@ -11380,14 +11367,12 @@ static ScrDyn *scr_dyn_date_value_of(const ScrDyn *d) {
   return scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "valueOf", NULL, 0, "valueOf");
 }
 
-#ifdef SCR_NODE_ISLANDS
 /* An island object's own ToPrimitive, or NULL with *hooked false for any
  * other value. +1 / NULL pending. */
 static ScrDyn *scr_dyn_handle_primitive(const ScrDyn *d, int hint, bool *hooked) {
-  *hooked = scr_ni_is_handle(d);
-  return *hooked ? scr_ni_to_primitive(d, hint) : NULL;
+  *hooked = scr_ni_dyn_handle(d);
+  return *hooked ? scr_ni_dyn_ops->to_primitive(d, hint) : NULL;
 }
-#endif
 
 /* Receiver-kind-dispatched toString() on a checked-dynamic value (the
  * dyn method surface — a stream's 'data'/for-await chunk is the common
@@ -11429,7 +11414,6 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     if (scr_dyn_error_encoding(d) && !scr_dyn_property_owner(d, "toString", 8)) return scr_dyn_error_string(d);
     return scr_str_new("[object Object]", 15);
   case SCR_DYN_HANDLE:
-#ifdef SCR_NODE_ISLANDS
   {
     bool hooked;
     ScrDyn *primitive = scr_dyn_handle_primitive(d, SCR_DYN_HINT_STRING, &hooked);
@@ -11440,7 +11424,6 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
       return text;
     }
   }
-#endif
     if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL || d->v.handle.tag == SCR_DYNH_DATE ||
         d->v.handle.tag == SCR_DYNH_MIME_TYPE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS) {
       ScrDyn *text = scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "toString", NULL, 0, "RegExp.toString");
@@ -11918,7 +11901,6 @@ bool scr_dyn_number_coerce_js(const ScrDyn *d, double *out) {
     return false;
   }
   default: {
-#ifdef SCR_NODE_ISLANDS
     bool hooked;
     ScrDyn *primitive = scr_dyn_handle_primitive(d, SCR_DYN_HINT_NUMBER, &hooked);
     if (hooked) {
@@ -11927,7 +11909,6 @@ bool scr_dyn_number_coerce_js(const ScrDyn *d, double *out) {
       scr_dyn_release(primitive);
       return ok;
     }
-#endif
     /* A Date's valueOf answers its time value. */
     if (scr_dyn_is_date(d)) {
       ScrDyn *time = scr_dyn_date_value_of(d);
@@ -11960,11 +11941,9 @@ static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d);
  * only for a Date: its time value, or the valueOf of an instance of a class
  * declared `extends Date`. */
 static ScrDyn *scr_dyn_number_primitive(const ScrDyn *d) {
-#ifdef SCR_NODE_ISLANDS
   bool hooked;
   ScrDyn *primitive = scr_dyn_handle_primitive(d, SCR_DYN_HINT_NUMBER, &hooked);
   if (hooked) return primitive;
-#endif
   if (scr_dyn_is_date(d)) return scr_dyn_date_value_of(d);
   double time;
   if (d->kind == SCR_DYN_TYPED_REF && scr_dyn_date_class_time(d, &time)) {
@@ -12084,11 +12063,9 @@ static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d) {
     return NULL;
   }
   if (!scr_dyn_to_primitive_result_is_object(d)) return scr_dyn_retain((ScrDyn *)d);
-#ifdef SCR_NODE_ISLANDS
   bool hooked;
   ScrDyn *primitive = scr_dyn_handle_primitive(d, SCR_DYN_HINT_DEFAULT, &hooked);
   if (hooked) return primitive;
-#endif
   ScrStr *str = scr_dyn_string_coerce(d);
   if (!str) return NULL;
   ScrDyn *out = scr_dyn_new_str(str);
@@ -12341,14 +12318,12 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
  * Array.prototype before it for arrays) and, for a class instance seen as
  * `unknown`, its class's compiled methods and accessors. */
 bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
-#ifdef SCR_NODE_ISLANDS
-  if (scr_ni_is_handle(v)) {
+  if (scr_ni_dyn_handle(v)) {
     ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
-    int found = scr_ni_has((ScrDyn *)v, k);
+    int found = scr_ni_dyn_ops->has((ScrDyn *)v, k);
     scr_dyn_release(k);
     return found == 1;
   }
-#endif
   /* Generator objects have no checked view; scr_dyn_has_key answers their
    * prototype members. */
   if (v->kind == SCR_DYN_TYPED_REF && !scr_dyn_generator(v)) {
@@ -14731,14 +14706,12 @@ void scr_dyn_obj_delete_field(ScrDyn *obj, const ScrStr *key) {
  * arrays, typed references and handles keep their explicit boundary;
  * deleting from a materialized snapshot would lose the mutation. */
 void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
-#ifdef SCR_NODE_ISLANDS
-  if (scr_ni_is_handle(recv)) {
+  if (scr_ni_dyn_handle(recv)) {
     ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
-    (void)scr_ni_delete(recv, k);
+    (void)scr_ni_dyn_ops->delete_key(recv, k);
     scr_dyn_release(k);
     return;
   }
-#endif
   if (scr_dyn_class_reflection_fence(recv) || scr_dyn_error_prototype_fence(recv)) return;
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_delete(recv, key); return; }
   if (recv->kind == SCR_DYN_TYPED_REF && recv->v.typed_ref.commit &&
@@ -16866,16 +16839,15 @@ static ScrDyn *scr_dyn_obj_data_walk(const ScrDyn *v, ScrObjWalk mode) {
 
 static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
   if (scr_dyn_class_reflection_fence(v)) return NULL;
-#ifdef SCR_NODE_ISLANDS
   /* Object.keys/values/entries of an island object: its own enumerable
    * string keys, read in Node. */
-  if (scr_ni_is_handle(v)) {
-    ScrDyn *keys = scr_ni_own_keys((ScrDyn *)v, 0);
+  if (scr_ni_dyn_handle(v)) {
+    ScrDyn *keys = scr_ni_dyn_ops->own_keys((ScrDyn *)v, 0);
     if (keys == NULL || mode == SCR_OBJWALK_KEYS) return keys;
     ScrDyn *out = scr_dyn_new_arr();
     for (size_t i = 0; i < keys->v.arr.len; i++) {
       ScrDyn *key = keys->v.arr.items[i];
-      ScrDyn *value = scr_ni_get((ScrDyn *)v, key);
+      ScrDyn *value = scr_ni_dyn_ops->get((ScrDyn *)v, key);
       if (value == NULL) {
         scr_dyn_release(out);
         scr_dyn_release(keys);
@@ -16893,7 +16865,6 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     scr_dyn_release(keys);
     return out;
   }
-#endif
   if (v->kind == SCR_DYN_PROXY) {
     ScrDyn *trap = scr_dyn_proxy_trap(v, "ownKeys");
     if (scr_exc_pending()) return NULL;
@@ -20117,15 +20088,13 @@ bool scr_dyn_iterates_by_protocol(const ScrDyn *value) {
   return scr_dyn_sync_generator(value);
 }
 
-#ifdef SCR_JS_TIER
-/* ── dynamic-tier primitives (scr_dyn.h, SCR_JS_TIER) ─────────────────── */
+/* ── dynamic-tier primitives (scr_dyn.h) ─────────────────── */
 
 const ScrDyn *scr_dyn_tier_object_prototype(void) { return scr_builtin_object_prototype; }
 
 void scr_dyn_tier_append(ScrDyn *obj, const ScrLayout *next, ScrDyn *value) {
   scr_dyn_obj_append_shared(obj, next, value);
 }
-#endif
 
 /* The program's writes onto compiled errors (scr_error.h). Kept at the end
  * of the file, after every function they call, so the rest of the unit
