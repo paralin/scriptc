@@ -6,7 +6,7 @@
  */
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { copyFile, mkdtemp, readFile, rename, rm, stat } from "node:fs/promises";
 import { delimiter } from "node:path";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -105,6 +105,44 @@ function platformLinkerIdentity(
   return resolvePlatformLinkerProgram(env, linker)?.identity ?? `<unresolved:${linker}>`;
 }
 
+/** Whether `path` starts with a program image rather than a script
+ * interpreter line. A script's own bytes do not describe what it runs: the
+ * interpreter, and whatever the script decides from its surroundings at run
+ * time, stay outside the identity of the file. */
+function programIsSelfContained(path: string): boolean {
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(path, "r");
+    const magic = Buffer.alloc(2);
+    const read = readSync(descriptor, magic, 0, magic.length, 0);
+    return !(read === magic.length && magic.toString("latin1") === "#!");
+  } catch {
+    return false;
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+}
+
+/** The linker program a driver runs when the link line names no `-fuse-ld`.
+ * The driver reports it by name, and that name is resolved on PATH the way
+ * the driver resolves it, so a new higher-priority `ld` appears in the
+ * identity even though PATH and the driver file are unchanged. */
+async function defaultLinkerIdentity(linker: string, env: NodeJS.ProcessEnv): Promise<string> {
+  try {
+    const reported = await execFileAsync(linker, ["-print-prog-name=ld"], {
+      env,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    const program = reported.stdout.trim();
+    if (program === "") return "<no-default-linker>";
+    return platformLinkerIdentity(env, program);
+  } catch {
+    return env["SCRIPTC_LINKER"] === undefined
+      ? `<unavailable:${linker}:${randomUUID()}>`
+      : `<unavailable:${linker}>`;
+  }
+}
+
 /** Cache-route identity for an object-only platform-link invocation.  The
  * complete executable cache additionally records and revalidates the
  * linker's resolved SDK/CRT inputs before it restores an executable.  This
@@ -137,11 +175,19 @@ export async function executableLinkerEnvironmentFingerprint(
   }
   // `-fuse-ld=lld` is chosen from the files around the driver, not from the
   // environment: an ld.lld appearing or disappearing changes the link line
-  // while PATH and the driver file stay the same.
-  const lldIdentity =
-    process.platform === "linux" ? (resolvedLldFile(linker, env) ?? "<no-ld.lld>") : "<not-linux>";
+  // while PATH and the driver file stay the same. Without lld the driver runs
+  // the linker program it reports, and that program is resolved on PATH at
+  // link time, so its own identity is recorded as well.
+  const lldFile = process.platform === "linux" ? resolvedLldFile(linker, env) : null;
+  const lldIdentity = process.platform === "linux" ? (lldFile ?? "<no-ld.lld>") : "<not-linux>";
+  const defaultLinkerLinkIdentity =
+    process.platform !== "linux"
+      ? "<not-linux>"
+      : lldFile !== null
+        ? "<lld-selected>"
+        : await defaultLinkerIdentity(linker, env);
   const hash = createHash("sha256")
-    .update("executable-linker-environment-v3\0")
+    .update("executable-linker-environment-v4\0")
     .update(toolchainEnvironmentFingerprint(env))
     .update("\0")
     .update(linkerIdentity)
@@ -149,6 +195,8 @@ export async function executableLinkerEnvironmentFingerprint(
     .update(effectiveDriverIdentity)
     .update("\0")
     .update(lldIdentity)
+    .update("\0")
+    .update(defaultLinkerLinkIdentity)
     .update("\0");
   for (const name of ["PATH", "SCRIPTC_TEST_RUNTIME_SRC_DIR"] as const) {
     const value = env[name];
@@ -173,14 +221,23 @@ export function platformLinkerSupportsPersistentCache(
   // selects and every input the link opened. On Darwin that proof is only
   // trusted for the Apple system shim, which is a stable front door to the
   // active SDK. On Linux the driver may sit in any prefix and the proof
-  // covers it directly, so any resolved driver is accepted.
+  // covers it directly, so any resolved driver file is accepted.
   const platform = target?.platform ?? process.platform;
   if (platform !== "darwin" && platform !== "linux") return false;
   if (env["SCRIPTC_LINKER"] !== undefined) return false;
   if (!toolchainEnvironmentCachePolicy(env).completeArtifacts) return false;
   const program = resolvePlatformLinkerProgram(env);
   if (program === null) return false;
-  return platform === "linux" || program.path.startsWith("/usr/bin/clang");
+  if (platform !== "linux") return program.path.startsWith("/usr/bin/clang");
+  // A program file's own bytes describe what it runs, so its identity is a
+  // cache key. A script is not: the interpreter and whatever the script
+  // decides at run time (injected linker options, environment) stay outside
+  // the file, so a warm build would restore an executable linked under an
+  // earlier configuration. The driver and, when `-fuse-ld=lld` selects one,
+  // the linker program must both be program files.
+  if (!programIsSelfContained(program.path)) return false;
+  const lld = resolvedLldFile(program.path, env);
+  return lld === null || programIsSelfContained(lld);
 }
 
 async function snapshotDependencies(paths: readonly string[]): Promise<NativeArtifactDependency[]> {
@@ -377,11 +434,14 @@ export async function linkNativeExecutable(
               ...(await snapshotDependencies([...toolchain, ...additionalDependencyPaths])),
             ])
             .catch(() => null);
+    let linkedWithDefaultLinker = false;
     await execFileAsync(linker, args).catch(async (error: unknown) => {
       // A failed link with lld runs again with the driver's default linker,
-      // whose error (if any) is the one reported.
+      // whose error (if any) is the one reported. That link line differs from
+      // the one the pre-link proof describes, so the result is not published.
       if (lld.length === 0) throw error;
       await execFileAsync(linker, linkArgs(false));
+      linkedWithDefaultLinker = true;
     });
     const output = await stat(privateOut);
     if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");
@@ -404,6 +464,7 @@ export async function linkNativeExecutable(
     }
     if (
       options.onArtifactReady !== undefined &&
+      !linkedWithDefaultLinker &&
       preLinkDependencies !== null &&
       (await nativeArtifactDependenciesStillMatch(preLinkDependencies).catch(() => false))
     ) {

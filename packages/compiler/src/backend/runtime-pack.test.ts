@@ -32,6 +32,10 @@ import {
 
 const VERSION = compilerReleaseVersion();
 
+/** The first bytes of a program image.  The cache gate only needs a file that
+ * is not a script interpreter line. */
+const PROGRAM_IMAGE = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00]);
+
 const BASE: NativeLinkFeatures = {
   regex: false,
   copying: false,
@@ -175,8 +179,7 @@ describe("runtime pack manifests", () => {
 
   test("a Linux driver in any prefix may publish, an unreachable one may not", async () => {
     const toolDir = await mkdtemp(join(tmpdir(), "scriptc-linker-gate-"));
-    await writeFile(join(toolDir, "clang"), "#!/bin/sh\nexit 0\n");
-    await chmod(join(toolDir, "clang"), 0o755);
+    await writeFile(join(toolDir, "clang"), PROGRAM_IMAGE);
     const env = { PATH: toolDir };
     expect(
       platformLinkerSupportsPersistentCache(env, { platform: "linux", defaultLinker: "clang" }),
@@ -194,6 +197,33 @@ describe("runtime pack manifests", () => {
         { platform: "linux", defaultLinker: "clang" },
       ),
     ).toBe(false);
+  });
+
+  test("a script driver or linker never publishes a complete executable", async () => {
+    // A script decides at run time what it runs, so its file identity does not
+    // describe the link line, and a warm build would restore an executable
+    // that an earlier configuration produced.
+    const toolDir = await mkdtemp(join(tmpdir(), "scriptc-linker-gate-script-"));
+    await writeFile(join(toolDir, "clang"), "#!/bin/sh\nexit 0\n");
+    await chmod(join(toolDir, "clang"), 0o755);
+    const env = { PATH: toolDir };
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "linux", defaultLinker: "clang" }),
+    ).toBe(false);
+
+    // The linker program `-fuse-ld=lld` selects is held to the same rule.
+    await writeFile(join(toolDir, "clang"), PROGRAM_IMAGE);
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "linux", defaultLinker: "clang" }),
+    ).toBe(true);
+    await writeFile(join(toolDir, "ld.lld"), "#!/bin/sh\nexit 0\n");
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "linux", defaultLinker: "clang" }),
+    ).toBe(false);
+    await writeFile(join(toolDir, "ld.lld"), PROGRAM_IMAGE);
+    expect(
+      platformLinkerSupportsPersistentCache(env, { platform: "linux", defaultLinker: "clang" }),
+    ).toBe(true);
   });
 
   test("the linker environment follows the effective clang behind a stable driver", async () => {
@@ -239,6 +269,34 @@ describe("runtime pack manifests", () => {
       const env = { SCRIPTC_LINKER: driver, PATH: root };
       const before = await executableLinkerEnvironmentFingerprint(env);
       await writeFile(join(root, "ld.lld"), "#!/bin/sh\nexit 0\n");
+      const after = await executableLinkerEnvironmentFingerprint(env);
+      expect(after).not.toBe(before);
+    },
+  );
+
+  test.skipIf(process.platform !== "linux")(
+    "the linker environment follows the default linker when no ld.lld is selected",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "scriptc-linker-default-"));
+      const driver = join(root, "clang");
+      await writeFile(
+        driver,
+        [
+          "#!/bin/sh",
+          'case "$1" in',
+          '  -print-prog-name=clang) printf "%s\\n" "$0" ;;',
+          '  -print-prog-name=ld) printf "%s\\n" "ld" ;;',
+          "  *) exit 2 ;;",
+          "esac",
+          "",
+        ].join("\n"),
+      );
+      await chmod(driver, 0o755);
+      // The driver runs the linker program it reports, so leaving PATH alone
+      // and installing that program is what changes the link line.
+      const env = { SCRIPTC_LINKER: driver, PATH: root };
+      const before = await executableLinkerEnvironmentFingerprint(env);
+      await writeFile(join(root, "ld"), PROGRAM_IMAGE);
       const after = await executableLinkerEnvironmentFingerprint(env);
       expect(after).not.toBe(before);
     },

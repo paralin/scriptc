@@ -208,8 +208,79 @@ test.skipIf(process.platform === "win32")(
     const entry = join(dir, "main.ts");
     const outPath = join(dir, "program");
     const clang = join(toolDir, "clang");
-    // A wrapper that runs the real driver keeps the link working while the
-    // driver file it points at stays under this test's control.
+    // A program that runs the real driver keeps the link working while the
+    // driver file it points at stays under this test's control. A program file
+    // is what the executable cache accepts: a script's own configuration is
+    // not part of the link proof.
+    const { stdout } = await execFileAsync("clang", ["-print-prog-name=clang"]);
+    const realClang = stdout.trim();
+    const path = `${toolDir}${delimiter}${process.env["PATH"] ?? ""}`;
+    const build = (): Promise<void> =>
+      execFileAsync(
+        process.execPath,
+        ["--import", tsxLoader, cliEntry, "build", entry, "-o", outPath],
+        {
+          env: { ...process.env, PATH: path, SCRIPTC_CACHE_DIR: cacheRoot },
+          maxBuffer: 4 * 1024 * 1024,
+        },
+      ).then(() => undefined);
+    const inode = async (): Promise<number> => (await stat(outPath)).ino;
+    const writeDriver = async (note: string): Promise<void> => {
+      const source = join(toolDir, "driver.c");
+      await writeFile(
+        source,
+        [
+          "#include <unistd.h>",
+          `/* ${note} */`,
+          `int main(int argc, char **argv) { execv(${JSON.stringify(realClang)}, argv); return 127; }`,
+          "",
+        ].join("\n"),
+      );
+      await rm(clang, { force: true });
+      await execFileAsync(realClang, ["-O1", "-o", clang, source]);
+    };
+    try {
+      await mkdir(cacheRoot, { mode: 0o700 });
+      await writeFile(entry, 'console.log("driver");\n');
+      await writeDriver("first");
+
+      await build();
+      expect(await execFileAsync(outPath, [])).toMatchObject({ stdout: "driver\n" });
+      const first = await inode();
+
+      // The unchanged driver file restores the executable it linked.
+      await build();
+      expect(await inode()).toBe(first);
+
+      // A different file at the same spelling is a different link input.
+      await writeDriver("replaced");
+      await build();
+      expect(await inode()).not.toBe(first);
+      expect(await execFileAsync(outPath, [])).toMatchObject({ stdout: "driver\n" });
+
+      // The replacement's own entry then restores in turn.
+      const second = await inode();
+      await build();
+      expect(await inode()).toBe(second);
+    } finally {
+      await Promise.all([
+        rm(dir, { recursive: true, force: true }),
+        rm(toolDir, { recursive: true, force: true }),
+      ]);
+    }
+  },
+  240_000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "a script driver links the program but never stores the executable",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-cli-executable-script-driver-"));
+    const toolDir = await mkdtemp(join(tmpdir(), "scriptc-cli-script-path-"));
+    const cacheRoot = join(dir, "cache");
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "program");
+    const clang = join(toolDir, "clang");
     const { stdout } = await execFileAsync("clang", ["-print-prog-name=clang"]);
     const realClang = stdout.trim();
     const path = `${toolDir}${delimiter}${process.env["PATH"] ?? ""}`;
@@ -225,32 +296,19 @@ test.skipIf(process.platform === "win32")(
     const inode = async (): Promise<number> => (await stat(outPath)).ino;
     try {
       await mkdir(cacheRoot, { mode: 0o700 });
-      await writeFile(entry, 'console.log("driver");\n');
+      await writeFile(entry, 'console.log("script driver");\n');
       await writeFile(clang, `#!/bin/sh\nexec ${JSON.stringify(realClang)} "$@"\n`);
       await chmod(clang, 0o755);
 
       await build();
-      expect(await execFileAsync(outPath, [])).toMatchObject({ stdout: "driver\n" });
+      expect(await execFileAsync(outPath, [])).toMatchObject({ stdout: "script driver\n" });
       const first = await inode();
 
-      // The unchanged driver file restores the executable it linked.
-      await build();
-      expect(await inode()).toBe(first);
-
-      // A different file at the same spelling is a different link input.
-      await writeFile(
-        clang,
-        `#!/bin/sh\n# replaced driver\nexec ${JSON.stringify(realClang)} "$@"\n`,
-      );
-      await chmod(clang, 0o755);
+      // The script decides at run time what it runs, so no executable entry
+      // may restore it: the unchanged repeat links again.
       await build();
       expect(await inode()).not.toBe(first);
-      expect(await execFileAsync(outPath, [])).toMatchObject({ stdout: "driver\n" });
-
-      // The replacement's own entry then restores in turn.
-      const second = await inode();
-      await build();
-      expect(await inode()).toBe(second);
+      expect(await execFileAsync(outPath, [])).toMatchObject({ stdout: "script driver\n" });
     } finally {
       await Promise.all([
         rm(dir, { recursive: true, force: true }),
