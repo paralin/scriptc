@@ -1285,7 +1285,76 @@ static void scr_typed_ref_forget(ScrDyn *value) {
   }
 }
 
+/* A referent that crosses into a dyn slot once per call, such as a record
+ * passed as `unknown` in a loop, would have its capsule built and disposed
+ * on every crossing. Instead, the capsules that last died with nothing but
+ * their referent and adapters stay interned in this ring, still holding
+ * their referent. A conversion of the same referent with the same adapters
+ * revives the capsule (scr_dyn_typed_ref_new), so it keeps its identity,
+ * and a revived capsule keeps its slot. A slot is reused in turn: a parked
+ * capsule (rc 0) that loses its slot is disposed, a live one only leaves
+ * the ring. The ring is also flushed before every collector pass
+ * (scr_cyc_pass_hook) and at the context's exit, and a capsule disposed
+ * any other way leaves it first (scr_typed_ref_unpark). */
+#ifndef SCR_RC_AUDIT
+#define SCR_TYPED_REF_PARKED 16
+static SCR_TL ScrDyn *scr_typed_ref_parked[SCR_TYPED_REF_PARKED];
+static SCR_TL unsigned scr_typed_ref_park_next;
+static SCR_TL bool scr_typed_ref_unparking;
+static void scr_dyn_dispose(ScrDyn *d, bool collected);
+
+/* Disposes every parked capsule and empties the ring. */
+static void scr_typed_ref_flush_parked(void) {
+  scr_typed_ref_unparking = true;
+  for (unsigned i = 0; i < SCR_TYPED_REF_PARKED; i++) {
+    ScrDyn *parked = scr_typed_ref_parked[i];
+    scr_typed_ref_parked[i] = NULL;
+    if (parked && parked->rc == 0) scr_dyn_dispose(parked, false);
+  }
+  scr_typed_ref_unparking = false;
+}
+
+/* Drops a capsule from the ring before it is disposed. */
+static void scr_typed_ref_unpark(const ScrDyn *d) {
+  for (unsigned i = 0; i < SCR_TYPED_REF_PARKED; i++)
+    if (scr_typed_ref_parked[i] == d) {
+      scr_typed_ref_parked[i] = NULL;
+      return;
+    }
+}
+
+/* A dying capsule with nothing but its referent and adapters. */
+static inline bool scr_typed_ref_parkable(const ScrDyn *d) {
+  return d->kind == SCR_DYN_TYPED_REF && !d->prototype && !d->symbol_properties &&
+         !d->symbol_keys && !d->v.typed_ref.materialized && !d->v.typed_ref.casts &&
+         !scr_typed_ref_unparking && !scr_typed_ref_exited && scr_typed_ref_capacity;
+}
+
+/* Parks a dying capsule in its own slot, or in the next one in turn. */
+static void scr_typed_ref_park(ScrDyn *d) {
+  for (unsigned i = 0; i < SCR_TYPED_REF_PARKED; i++)
+    if (scr_typed_ref_parked[i] == d) return;
+  if (!scr_cyc_pass_hook) scr_cyc_pass_hook = scr_typed_ref_flush_parked;
+  unsigned slot = scr_typed_ref_park_next;
+  scr_typed_ref_park_next = (slot + 1) % SCR_TYPED_REF_PARKED;
+  ScrDyn *evicted = scr_typed_ref_parked[slot];
+  scr_typed_ref_parked[slot] = d;
+  if (evicted && evicted->rc == 0) {
+    scr_typed_ref_unparking = true;
+    scr_dyn_dispose(evicted, false);
+    scr_typed_ref_unparking = false;
+  }
+}
+
+#else
+/* The RC audit counts every capsule's disposal where its last reference
+ * goes: nothing is parked. */
+static void scr_typed_ref_flush_parked(void) {}
+static void scr_typed_ref_unpark(const ScrDyn *d) { (void)d; }
+#endif
+
 static void scr_typed_ref_exit(void) {
+  scr_typed_ref_flush_parked();
   if (scr_typed_ref_count == 0) scr_typed_ref_free_slots();
   else scr_typed_ref_exited = true;
 }
@@ -1446,6 +1515,11 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 #ifndef SCR_RC_AUDIT
   /* A capsule with nothing but its referent and adapters: the common end
    * of a value that crossed into a dyn slot for one call. */
+  if (!collected && scr_typed_ref_parkable(d)) {
+    scr_typed_ref_park(d);
+    return;
+  }
+  if (d->kind == SCR_DYN_TYPED_REF) scr_typed_ref_unpark(d);
   if (d->kind == SCR_DYN_TYPED_REF && !collected && !d->prototype && !d->symbol_properties &&
       !d->symbol_keys && !d->v.typed_ref.materialized && !d->v.typed_ref.casts &&
       scr_dyn_free_count < SCR_DYN_FREE_MAX) {
@@ -1633,6 +1707,10 @@ void scr_dyn_release(ScrDyn *d) {
 #endif
   scr_cyc_dead(d);
 #ifndef SCR_RC_AUDIT
+  if (scr_typed_ref_parkable(d)) {
+    scr_typed_ref_park(d);
+    return;
+  }
   if ((d->kind == SCR_DYN_NUM || d->kind == SCR_DYN_STR) && scr_dyn_free_count < SCR_DYN_FREE_MAX) {
     if (d->kind == SCR_DYN_STR) scr_str_release(d->v.str);
     d->v.str = (ScrStr *)scr_dyn_free_misc; /* see scr_dyn_leaf_alloc */
@@ -4423,7 +4501,9 @@ static ScrDyn *scr_dyn_typed_ref_new(
   for (ScrDyn *value; (value = scr_typed_ref_slots[slot]); slot = (slot + 1) & (scr_typed_ref_capacity - 1)) {
     if (value->v.typed_ref.ptr == ptr && value->v.typed_ref.retain == retain &&
         value->v.typed_ref.materialize == materialize && value->v.typed_ref.commit == commit &&
-        value->v.typed_ref.type_key_len == type_key_len && !memcmp(value->v.typed_ref.type_key, type_key, type_key_len)) {
+        value->v.typed_ref.type_key_len == type_key_len &&
+        (value->v.typed_ref.type_key == type_key ||
+         !memcmp(value->v.typed_ref.type_key, type_key, type_key_len))) {
       if (traced) value->v.typed_ref.traced = true;
       if (observed) value->v.typed_ref.observed = true;
       return scr_dyn_retain(value);
