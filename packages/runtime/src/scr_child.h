@@ -6,7 +6,7 @@
 #include "scr_lib.h"
 
 /* ── child_process (scr_child.c) ─────────────────────────────────────
- * The synchronous slice: spawnSync as posix_spawnp + piped utf8 capture +
+ * The synchronous slice: spawnSync as posix_spawn + piped utf8 capture +
  * waitpid — blocks until the child is reaped (no zombie can outlive the
  * call). NEVER throws: spawn failure (nonexistent binary, EACCES) is data
  * — has_status false and empty outputs — like Node's `error` property

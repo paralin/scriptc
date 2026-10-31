@@ -2903,10 +2903,11 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), BOOL, STRING, BOOL, arrayOf(STRING), F64],
       result: SPAWNRES_T,
     },
-    /** child_process.spawn (scr_child.c + the scr_async.c loop): posix_spawnp
-     * with per-slot ignore/inherit/pipe modes (and number output fds), the
-     * all-piped Node default, and the child registered with the event loop,
-     * which polls waitpid(WNOHANG) at quiescence like timers.
+    /** child_process.spawn (scr_child.c + the scr_async.c loop): posix_spawn
+     * after the PATH search in the parent, with per-slot ignore/inherit/pipe
+     * modes (and number output fds), the all-piped Node default, and the
+     * child registered with the event loop, which polls waitpid(WNOHANG) at
+     * quiescence like timers.
      * NEVER throws: spawn failure defers to the "error" event, Node-exact
      * (the error message is Node's "spawn <cmd> <ERRNO-NAME>"; an "error"
      * event with no listener prints it and exits 1 like an EventEmitter).

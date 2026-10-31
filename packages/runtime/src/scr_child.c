@@ -1,11 +1,11 @@
-/* child_process — the synchronous slice: spawnSync as posix_spawnp +
+/* child_process — the synchronous slice: spawnSync as posix_spawn +
  * piped utf8 capture + waitpid.
  *
  * Node parity notes (SEMANTICS.md has the user-facing story):
- * - The command PATH-searches like Node's (posix_spawnp; a command
- *   containing '/' spawns directly). `shell` (always with an empty args
- *   list — see DEP0190 below) runs the command line through /bin/sh -c
- *   instead.
+ * - The command PATH-searches like Node's (the parent searches PATH and
+ *   spawns the candidate; a command containing '/' spawns directly).
+ *   `shell` (always with an empty args list — see DEP0190 below) runs the
+ *   command line through /bin/sh -c instead.
  * - stdin is /dev/null (Node's spawnSync default reads nothing without
  *   `input`; `input` pipes that string instead); stdout/stderr are
  *   captured to strings, utf8 assumed — the compiler fences every other
@@ -3304,24 +3304,29 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
 static char **scr_exec_envp(ScrArr *pairs);
 static void scr_exec_envp_free(char **envp);
 
-/* posix_spawnp for the child_process spawns. Without `envp` the command
- * resolves on this process's PATH over `environ`. With `envp` (a
- * replacement environment) it resolves the way Node's libuv runs execvp
- * in the child: a name with a '/' runs as given; otherwise each entry of
- * the replacement's PATH (an empty entry is the current directory), or of
- * the default path when the replacement has no PATH, is tried in order,
- * and a candidate whose exec fails with ENOENT, ENOTDIR or EACCES (a
- * missing file, or a script whose interpreter is missing) moves on to the
- * next entry. The last such failure is EACCES if any candidate was denied,
- * else ENOENT. Relative entries are resolved by the child, which starts in
- * `cwd`. Returns posix_spawn's error number. */
+/* posix_spawn for the child_process spawns, never posix_spawnp. Node
+ * reaches a child through libuv, which resolves the command itself: a name
+ * with a '/' runs as given; otherwise each entry of the command's PATH (a
+ * replacement environment's `envp`, or this process's when `envp` is NULL;
+ * an empty entry is the current directory), or of the default path when
+ * there is no PATH, is tried in order, and a candidate whose spawn fails
+ * with ENOENT, ENOTDIR or EACCES (a missing file, or a script whose
+ * interpreter is missing) moves on to the next entry. The last such
+ * failure is EACCES if any candidate was denied, else ENOENT. Relative
+ * entries are resolved by the child, which starts in `cwd`. Returns
+ * posix_spawn's error number.
+ *
+ * posix_spawnp is avoided because Apple's answers a spurious ENOENT when
+ * a chdir file action is staged and the command is relative, even though
+ * the child is spawned: resolving the command here and spawning the
+ * candidate directly keeps a `cwd` with a relative command working. */
 static int scr_spawn_resolved(pid_t *pid, const char *file, const posix_spawn_file_actions_t *fa,
                               const posix_spawnattr_t *attr, char *const *argv,
                               char *const *envp) {
-  if (envp == NULL) return posix_spawnp(pid, file, fa, attr, argv, environ);
-  if (strchr(file, '/')) return posix_spawn(pid, file, fa, attr, argv, envp);
+  char *const *env = envp != NULL ? envp : environ;
+  if (strchr(file, '/')) return posix_spawn(pid, file, fa, attr, argv, env);
   const char *path = "/usr/bin:/bin";
-  for (char *const *e = envp; *e; e++) {
+  for (char *const *e = env; *e; e++) {
     if (strncmp(*e, "PATH=", 5) == 0) {
       path = *e + 5;
       break;
@@ -3339,7 +3344,7 @@ static int scr_spawn_resolved(pid_t *pid, const char *file, const posix_spawn_fi
     memcpy(candidate, prefix, prefix_len);
     candidate[prefix_len] = '/';
     memcpy(candidate + prefix_len + 1, file, file_len + 1);
-    int err = posix_spawn(pid, candidate, fa, attr, argv, envp);
+    int err = posix_spawn(pid, candidate, fa, attr, argv, env);
     free(candidate);
     if (err == EACCES) denied = true;
     else if (err != ENOENT && err != ENOTDIR) return err;
@@ -3995,7 +4000,7 @@ ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd
 /* ── spawn: the asynchronous child + its event registry ──────────────────
  *
  * spawn(cmd, args, { stdio: "ignore" }) starts the child IMMEDIATELY
- * (posix_spawnp, all three stdio fds on /dev/null) and registers it with
+ * (posix_spawn, all three stdio fds on /dev/null) and registers it with
  * the loop: scr_async.c polls scr_children_poll() at quiescence, which
  * waitpid(WNOHANG)s every running child and fires listeners when one is
  * reaped. Node semantics, matched exactly:
@@ -4390,7 +4395,7 @@ void scr_child_release(ScrChild *c) {
 void *scr_child_retain_v(void *p) { return scr_child_retain((ScrChild *)p); }
 void scr_child_release_v(void *p) { scr_child_release((ScrChild *)p); }
 
-/* Node's error-code names for the spawn failures a posix_spawnp can
+/* Node's error-code names for the spawn failures posix_spawn can
  * report (libuv reports the same POSIX names). */
 static const char *scr_errname(int err) {
   switch (err) {
