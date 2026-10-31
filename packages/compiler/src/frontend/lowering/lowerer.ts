@@ -248,6 +248,7 @@ import {
 } from "../tier-analysis.js";
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
+import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./record-links.js";
 import { finalizePrivateBrands } from "./private-brands.js";
 import { finalizeFunctionNames } from "./function-names.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
@@ -315,6 +316,7 @@ import type {
   IrWasmModule,
   IrWasmUntranslated,
   IrParam,
+  IrRecordLink,
   IrRecordShape,
   IrStmt,
   IrType,
@@ -3851,6 +3853,25 @@ export class Lowerer {
   >();
   /** Classes used as ThreadSlots keys: their hierarchies carry a slot word. */
   readonly threadSlotKeys = new Set<string>();
+  /** The narrowing conversions that link copies to their sources, by
+   * `${from}:${to}` (record-links.ts). */
+  readonly recordLinks = new Map<string, IrRecordLink>();
+  /** Where each of recordLinks' pairs was first converted, by compose
+   * helper name. */
+  readonly recordLinkLocs = new Map<string, SrcLoc>();
+  /** The conversion each %rec.string and %rec.primitive helper's calls
+   * replace, by helper name (record-links.ts recordStringCall). */
+  readonly recordStringFallbacks = new Map<string, StringFallback>();
+  /** The conversion helpers that build copies of recordLinks' pairs. */
+  readonly recordLinkSites: { link: IrRecordLink; projection: IrFunction }[] = [];
+  /** Object.prototype methods other than toString called by name on
+   * record types (finalizeRecordLinks checks them against link sources). */
+  readonly recordMethodCalls: { shapeId: string; method: string; loc: SrcLoc }[] = [];
+  /** Completions of "custom" linked helpers (record-links.ts), which
+   * finalizeRecordLinks runs once the links are known. */
+  readonly linkedHelperFinalizers: (() => void)[] = [];
+  /** Helpers over record types that finalizeRecordLinks completes. */
+  readonly linkedHelpers: LinkedHelper[] = [];
   /** The JavaScript names of object literals' methods, by lifted function
    * (function-names.ts). */
   readonly objectMethodNames = new Map<string, string>();
@@ -4475,6 +4496,13 @@ export class Lowerer {
       checkedTable("threadSlotNames", () => this.threadSlotNames.size),
       checkedTable("threadSlotFamilies", () => this.threadSlotFamilies.size),
       checkedTable("threadSlotKeys", () => this.threadSlotKeys.size),
+      checkedTable("recordLinks", () => this.recordLinks.size),
+      checkedTable("recordLinkLocs", () => this.recordLinkLocs.size),
+      checkedTable("recordLinkSites", () => this.recordLinkSites.length),
+      checkedTable("recordStringFallbacks", () => this.recordStringFallbacks.size),
+      checkedTable("linkedHelpers", () => this.linkedHelpers.length),
+      checkedTable("linkedHelperFinalizers", () => this.linkedHelperFinalizers.length),
+      checkedTable("recordMethodCalls", () => this.recordMethodCalls.length),
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
@@ -9869,6 +9897,7 @@ export class Lowerer {
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
     checkGenericIdentityPins(this);
+    finalizeRecordLinks(this, functions);
     boxBuiltinValuesChecked(this, functions);
     finalizeFunctionNames(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
@@ -10006,6 +10035,7 @@ export class Lowerer {
             ...(this.threadSlotKeys.size > 0
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
               : {}),
+            ...(this.recordLinks.size > 0 ? { recordLinks: [...this.recordLinks.values()] } : {}),
             ...(this.freezableArrays.size > 0
               ? { freezableArrays: [...this.freezableArrays].sort() }
               : {}),
