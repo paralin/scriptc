@@ -89,3 +89,7 @@ dateCtor.parse = function parse() {
 console.log(Object.keys(dateCtor), dateCtor.propertyIsEnumerable("parse"), dateCtor.parse === originalParse);
 delete dateCtor.UTC;
 console.log("UTC" in dateCtor, typeof dateCtor.UTC);
+
+// The static members follow `prototype` in the own-key order.
+console.log(Object.getOwnPropertyNames(constructorNamed("Array")).join(","));
+console.log(Object.getOwnPropertyNames(object).slice(0, 6).join(","));

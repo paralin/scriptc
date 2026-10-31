@@ -7715,7 +7715,8 @@ static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *
 /* Property tables belong to closures, not temporary checked wrappers. Seed
  * the configurable, non-writable builtin members once so redefinitions and
  * deletions retain the same behavior through every alias. Returns +1. */
-static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
+/* The function's own-property table (+1), created on first use. */
+static ScrDyn *scr_dyn_fn_table(const ScrDyn *function) {
   /* A signature adapter shares the table of the function it adapts. */
   ScrClosure *owner = scr_closure_identity(function->v.fn.clo);
   if (!owner->props && function->v.fn.class_obj && function->v.fn.class_obj->static_data)
@@ -7746,18 +7747,27 @@ static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
       entry->configurable = false;
     }
   }
-  ScrDyn *table = (ScrDyn *)scr_box_get_ref(owner->props);
+  return (ScrDyn *)scr_box_get_ref(owner->props);
+}
+
+/* scr_dyn_fn_table, with a builtin constructor's static members defined as
+ * own properties of it (scr_dyn_builtin_statics_own_fn). */
+static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
+  ScrDyn *table = scr_dyn_fn_table(function);
   if (scr_dyn_builtin_statics_own_fn) scr_dyn_builtin_statics_own_fn(function, table);
   return table;
 }
 
 void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype) {
-  ScrDyn *table = scr_dyn_fn_properties(function);
+  /* `prototype` comes before the static members, as in V8's own-key order
+   * (length, name, prototype, then the statics). */
+  ScrDyn *table = scr_dyn_fn_table(function);
   scr_dyn_obj_set(table, "prototype", 9, prototype);
   ScrDynEntry *entry = scr_dyn_find_entry(table, "prototype", 9);
   entry->writable = false;
   entry->enumerable = false;
   entry->configurable = false;
+  if (scr_dyn_builtin_statics_own_fn) scr_dyn_builtin_statics_own_fn(function, table);
   scr_dyn_release(table);
 }
 
