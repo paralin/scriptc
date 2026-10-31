@@ -305,6 +305,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "console.dirDyn": "scr_console_dir_dyn",
   "global.native": "scr_global_native",
   "global.installValues": "scr_global_values_install",
+  "dyn.installBuiltinStatics": "scr_builtin_statics_install",
   "global.forInObject": "scr_global_for_in_object",
   "navigator.object": "scr_navigator_object",
   "navigator.language": "scr_navigator_language",
@@ -820,6 +821,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
   "record.sourceSpread": "scr_record_source_spread",
+  "record.sourceShare": "scr_record_source_share",
   "record.sourceNote": "scr_record_source_note",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
@@ -1847,8 +1849,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.getOwnPropertyDescriptors": "scr_dyn_get_own_property_descriptors",
   "dyn.preventExtensions": "scr_dyn_prevent_extensions",
   "dyn.isExtensible": "scr_dyn_is_extensible",
+  "dyn.isExtensibleQuery": "scr_dyn_is_extensible_query",
   "dyn.seal": "scr_dyn_seal",
   "dyn.isSealed": "scr_dyn_is_sealed",
+  "dyn.isSealedQuery": "scr_dyn_is_sealed_query",
   "dyn.objValues": "scr_dyn_obj_values",
   "dyn.objValueList": "scr_dyn_obj_value_list",
   "dyn.objEntries": "scr_dyn_obj_entries",

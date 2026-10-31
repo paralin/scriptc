@@ -1176,6 +1176,9 @@ const RUNTIME_FEATURE_RULES = {
   typeOrigins: rule({ initial: (mod) => (mod.declOrigins?.length ?? 0) > 0 }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically
+   * (scr_dyn_integrity.c, a unit of its own so scr_json.c keeps its layout). */
+  dynIntegrityQueries: rule({ fns: ["dyn.isExtensibleQuery", "dyn.isSealedQuery"] }),
   /** A generator that binds its parameters at the call (scr_gen_bind.c):
    * the spawn wrapper's eager step imports the bind helper, and every other
    * program links the default runtime objects. */
@@ -1208,6 +1211,7 @@ const RUNTIME_FEATURE_RULES = {
       "path.parseValue",
       "path.formatValue",
       "path.toNamespacedValue",
+      "dyn.installBuiltinStatics",
     ],
   }),
   /** The stream unit emits through the emitter unit, also when the
@@ -1587,6 +1591,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
+    dynIntegrityQueries: false,
     dynBuffer: false,
     builtinValues: false,
     computedRequire: false,

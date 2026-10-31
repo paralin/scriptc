@@ -4013,6 +4013,9 @@ function buildLibFnSignatures() {
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
     /** Installs the program's builtin-global lookup (global-values.ts). */
     "global.installValues": { argTypes: [DYN], result: VOID },
+    /** Installs the program's static-member lookup for builtin constructor
+     * values (builtin-statics.ts). */
+    "dyn.installBuiltinStatics": { argTypes: [DYN], result: VOID },
     /** The keys `for (key in globalThis)` visits, as a fresh object. */
     "global.forInObject": { argTypes: [], result: DYN },
     /** Node's navigator global (scr_node_builtin.c). */
@@ -4270,6 +4273,13 @@ function buildLibFnSignatures() {
     "dyn.isExtensible": { argTypes: [DYN], result: BOOL },
     "dyn.seal": { argTypes: [DYN], result: DYN },
     "dyn.isSealed": { argTypes: [DYN], result: BOOL },
+    /** Object.isExtensible / Object.isSealed of a value whose kind is known
+     * only at runtime: a native handle or a promise has no modeled integrity
+     * state, so these refuse (SC2020) instead of answering like
+     * dyn.isExtensible/dyn.isSealed, which the static arms (a class
+     * instance's checked view, a typed function value) keep using. */
+    "dyn.isExtensibleQuery": { argTypes: [DYN], result: BOOL },
+    "dyn.isSealedQuery": { argTypes: [DYN], result: BOOL },
     "dyn.objValues": { argTypes: [DYN], result: DYN },
     /** Object.values as a native vector of checked values, for results the
      * program consumes directly (for-of, index reads, read-only methods). */
@@ -5049,6 +5059,21 @@ function buildLibFnSignatures() {
      * (key-order-witness.ts ordered spreads). Both are record types. Never
      * throws. */
     "record.sourceSpread": { argTypes: [null, null], result: VOID },
+    /** `record.sourceShare(built, value)`: the record `built`, of value's
+     * record type, keeps value's kept source too (record-links.ts compose
+     * helpers). Never throws. */
+    "record.sourceShare": { argTypes: [null, null], result: VOID },
+    /** `record.link(copy, source, pair)`: the copy a narrowing conversion
+     * just built links to its source record (IrModule.recordLinks; `pair`
+     * a numLit). Borrows both. Never throws. */
+    "record.link": { argTypes: [null, null, F64], result: VOID },
+    /** `record.linkIs(copy, pair)`: whether the record links to a source
+     * through the pair (a numLit). Never throws. */
+    "record.linkIs": { argTypes: [null, F64], result: BOOL },
+    /** `record.linkSource(copy, pair)`: the source a record links to
+     * through the pair, which the caller has tested (record.linkIs); its
+     * type is the pair's source type. Never throws. */
+    "record.linkSource": { argTypes: [null, F64], result: VOID },
     /** `record.sourceNote(built, keys)`: the record a width spread just
      * built keeps `keys` (the copy's own keys, in order; declared ones are
      * placeholders) as its kept source when they hold an undeclared key or

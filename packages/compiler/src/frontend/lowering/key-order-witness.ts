@@ -827,6 +827,14 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
           if (early.size !== before) grew = true;
         }
       }
+      // A copy narrowed from a record links to it (record-links.ts) and
+      // shows the record's own keys, so the record is observed through it.
+      for (const link of lowerer.recordLinks.values()) {
+        if (!early.has(link.to)) continue;
+        const before = early.size;
+        shapesIn({ kind: "record", shapeId: link.from }, early, earlySeen);
+        if (early.size !== before) grew = true;
+      }
     }
     for (let grew = true; grew;) {
       grew = false;

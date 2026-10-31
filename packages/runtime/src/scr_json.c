@@ -3469,11 +3469,21 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
       ScrDyn *table = (ScrDyn *)scr_box_get_ref(scr_closure_identity(value->v.fn.clo)->props);
       ScrDyn *desc = table ? scr_dyn_own_descriptor(table, key) : NULL;
       scr_dyn_release(table);
-      return desc;
+      if (!desc || desc->kind != SCR_DYN_UNDEF || !scr_dyn_builtin_static_fn || value->v.fn.class_obj)
+        return desc;
+      ScrDyn *member = scr_dyn_builtin_static_fn(value, key->data, key->len, true);
+      if (!member && !scr_exc_pending()) return desc;
+      scr_dyn_release(desc);
+      return member;
     }
     bool name = key->len == 4 && memcmp(key->data, "name", 4) == 0;
     bool length = key->len == 6 && memcmp(key->data, "length", 6) == 0;
-    if (!name && !length) return scr_dyn_retain(scr_dyn_undefined());
+    if (!name && !length) {
+      ScrDyn *member = scr_dyn_builtin_static_fn && !value->v.fn.class_obj
+        ? scr_dyn_builtin_static_fn(value, key->data, key->len, true)
+        : NULL;
+      return member || scr_exc_pending() ? member : scr_dyn_retain(scr_dyn_undefined());
+    }
     ScrDyn *out = scr_dyn_new_obj();
     ScrDyn *member = scr_dyn_fn_get(value, key->data, key->len);
     scr_dyn_obj_set(out, "value", 5, member);
@@ -3834,9 +3844,13 @@ static void scr_record_source_disposed(void *rec) {
 
 /* The single native dispose hook serves weak collections and the table
  * above; each observer runs only while it has entries to forget. */
+static void scr_record_link_disposed(void *copy);
+static SCR_TL size_t scr_record_link_count;
+
 static void scr_dispose_observers(void *object) {
   if (scr_weak_maybe_key(object)) scr_weak_disposed(object);
   if (scr_record_source_count) scr_record_source_disposed(object);
+  if (scr_record_link_count) scr_record_link_disposed(object);
 }
 
 /* Keeps live entries plus deleted markers at most half the table: grows
@@ -4026,6 +4040,113 @@ void scr_record_source_spread(void *dst, const void *src, const char *const *nam
   scr_record_source_put(&probe);
 }
 
+/* ── Links from narrowed copies to their sources ──────────────────────
+ * A conversion of a native record into a narrower record type builds a
+ * copy with the declared fields. When the source has other properties,
+ * the copy links to the source (a +1 reference, released with the copy):
+ * the copy's reflective surfaces answer from a record of the source's type
+ * built from both (the compiler's per-pair compose helpers), so the
+ * source's other properties stay visible, as on the one object Node has.
+ * `pair` names the (source type, copy type) pair; 0 is no link. Native
+ * records only: no checked-dynamic value is involved. */
+typedef struct {
+  void *copy;
+  void *source;
+  void (*release)(void *);
+  uint32_t pair;
+} ScrRecordLink;
+static SCR_TL ScrRecordLink *scr_record_links;
+static SCR_TL size_t scr_record_link_capacity, scr_record_link_deleted;
+#define SCR_RECORD_LINK_DELETED ((void *)1)
+
+static size_t scr_record_link_bucket(const void *copy) {
+  uint64_t key = ((uint64_t)(uintptr_t)copy >> 4) * UINT64_C(0x9E3779B97F4A7C15);
+  return (size_t)(key >> 32) & (scr_record_link_capacity - 1);
+}
+
+static ScrRecordLink *scr_record_link_find(const void *copy) {
+  if (!scr_record_link_count) return NULL;
+  size_t mask = scr_record_link_capacity - 1;
+  for (size_t slot = scr_record_link_bucket(copy); scr_record_links[slot].copy;
+       slot = (slot + 1) & mask) {
+    if (scr_record_links[slot].copy == copy) return &scr_record_links[slot];
+  }
+  return NULL;
+}
+
+/* Frees the table at thread exit; the remaining sources are released after
+ * the storage is detached. */
+static void scr_record_link_teardown(void) {
+  ScrRecordLink *table = scr_record_links;
+  size_t capacity = scr_record_link_capacity;
+  scr_record_links = NULL;
+  scr_record_link_capacity = scr_record_link_count = scr_record_link_deleted = 0;
+  for (size_t i = 0; i < capacity; i++) {
+    if (table[i].copy && table[i].copy != SCR_RECORD_LINK_DELETED) table[i].release(table[i].source);
+  }
+  free(table);
+}
+
+/* Keeps live entries plus deleted markers at most half the table. */
+static void scr_record_link_reserve(void) {
+  if (scr_record_link_capacity &&
+      scr_record_link_count + scr_record_link_deleted < scr_record_link_capacity / 2)
+    return;
+  size_t old_capacity = scr_record_link_capacity;
+  ScrRecordLink *old = scr_record_links;
+  scr_record_link_capacity = !old_capacity                                 ? 64
+                             : scr_record_link_count >= old_capacity / 4 ? old_capacity * 2
+                                                                         : old_capacity;
+  scr_record_links = calloc(scr_record_link_capacity, sizeof *scr_record_links);
+  if (!scr_record_links) scr_json_oom();
+  for (size_t i = 0; i < old_capacity; i++) {
+    if (!old[i].copy || old[i].copy == SCR_RECORD_LINK_DELETED) continue;
+    size_t slot = scr_record_link_bucket(old[i].copy);
+    while (scr_record_links[slot].copy) slot = (slot + 1) & (scr_record_link_capacity - 1);
+    scr_record_links[slot] = old[i];
+  }
+  scr_record_link_deleted = 0;
+  free(old);
+}
+
+void scr_record_link(void *copy, void *source, void (*release)(void *), uint32_t pair) {
+  if (!copy || !source) {
+    if (source) release(source);
+    return;
+  }
+  if (!scr_record_links) scr_atexit(scr_record_link_teardown);
+  scr_record_link_reserve();
+  size_t mask = scr_record_link_capacity - 1;
+  size_t slot = scr_record_link_bucket(copy);
+  while (scr_record_links[slot].copy && scr_record_links[slot].copy != SCR_RECORD_LINK_DELETED)
+    slot = (slot + 1) & mask;
+  if (scr_record_links[slot].copy == SCR_RECORD_LINK_DELETED) scr_record_link_deleted--;
+  scr_record_links[slot] = (ScrRecordLink){ copy, source, release, pair };
+  scr_record_link_count++;
+  scr_weak_dispose_hook = &scr_dispose_observers;
+}
+
+uint32_t scr_record_link_pair(const void *copy) {
+  ScrRecordLink *link = scr_record_link_find(copy);
+  return link ? link->pair : 0;
+}
+
+void *scr_record_link_source(const void *copy) {
+  ScrRecordLink *link = scr_record_link_find(copy);
+  return link ? link->source : NULL;
+}
+
+static void scr_record_link_disposed(void *copy) {
+  ScrRecordLink *link = scr_record_link_find(copy);
+  if (!link) return;
+  void *source = link->source;
+  void (*release)(void *) = link->release;
+  *link = (ScrRecordLink){ .copy = SCR_RECORD_LINK_DELETED };
+  scr_record_link_count--;
+  scr_record_link_deleted++;
+  release(source);
+}
+
 void scr_record_source_move(void *from, void *to) {
   if (!scr_record_source_count) return;
   ScrRecordSource *old = scr_record_source_slot(to);
@@ -4044,6 +4165,18 @@ void scr_record_source_move(void *from, void *to) {
   scr_record_source_deleted++;
   moved.rec = to;
   scr_record_source_put(&moved);
+}
+
+/* The record `dst`, of the same shape as `src`, keeps src's kept source
+ * too: the composed record of a linked copy (scr_record_link) whose
+ * source is a checked record. Borrows both. */
+void scr_record_source_share(void *dst, const void *src) {
+  ScrRecordSource *found = scr_record_source_find(src);
+  if (!dst || !found || !found->view) return;
+  ScrRecordSource shared = *found;
+  shared.rec = dst;
+  scr_dyn_retain(shared.view);
+  scr_record_source_put(&shared);
 }
 
 /* Refreshes a retained record view: the view's own-key order, declared
@@ -5812,6 +5945,9 @@ bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
   return scr_bytes_instanceof_at(value, callee, NULL);
 }
 SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) = NULL;
+SCR_TL ScrDyn *(*scr_dyn_builtin_static_fn)(const ScrDyn *fn, const char *key, size_t key_len,
+                                            bool descriptor) = NULL;
+SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table) = NULL;
 ScrDyn *(*scr_bytes_buffer_constructor_fn)(void) = NULL;
 
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
@@ -7579,7 +7715,8 @@ static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *
 /* Property tables belong to closures, not temporary checked wrappers. Seed
  * the configurable, non-writable builtin members once so redefinitions and
  * deletions retain the same behavior through every alias. Returns +1. */
-static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
+/* The function's own-property table (+1), created on first use. */
+static ScrDyn *scr_dyn_fn_table(const ScrDyn *function) {
   /* A signature adapter shares the table of the function it adapts. */
   ScrClosure *owner = scr_closure_identity(function->v.fn.clo);
   if (!owner->props && function->v.fn.class_obj && function->v.fn.class_obj->static_data)
@@ -7613,13 +7750,24 @@ static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
   return (ScrDyn *)scr_box_get_ref(owner->props);
 }
 
+/* scr_dyn_fn_table, with a builtin constructor's static members defined as
+ * own properties of it (scr_dyn_builtin_statics_own_fn). */
+static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
+  ScrDyn *table = scr_dyn_fn_table(function);
+  if (scr_dyn_builtin_statics_own_fn) scr_dyn_builtin_statics_own_fn(function, table);
+  return table;
+}
+
 void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype) {
-  ScrDyn *table = scr_dyn_fn_properties(function);
+  /* `prototype` comes before the static members, as in V8's own-key order
+   * (length, name, prototype, then the statics). */
+  ScrDyn *table = scr_dyn_fn_table(function);
   scr_dyn_obj_set(table, "prototype", 9, prototype);
   ScrDynEntry *entry = scr_dyn_find_entry(table, "prototype", 9);
   entry->writable = false;
   entry->enumerable = false;
   entry->configurable = false;
+  if (scr_dyn_builtin_statics_own_fn) scr_dyn_builtin_statics_own_fn(function, table);
   scr_dyn_release(table);
 }
 
@@ -15617,6 +15765,7 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
     return scr_dyn_new_num((double)d->v.fn.arity);
   }
   if (key_len == 5 && memcmp(key, "apply", 5) == 0) return scr_dyn_function_apply();
+  if (scr_dyn_builtin_static_fn && !d->v.fn.class_obj) return scr_dyn_builtin_static_fn(d, key, key_len, false);
   if (d->v.fn.class_obj && !d->v.fn.class_obj->static_data) {
     static const char message[] = "scriptc: class properties through unknown other than name and length are not supported";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);

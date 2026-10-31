@@ -138,6 +138,9 @@ export interface CcOptions {
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically:
+   * compiles scr_dyn_integrity.c. */
+  dynIntegrityQueries?: boolean;
   /** A generator that binds its parameters at the call: compiles
    * scr_gen_bind.c. */
   genBind?: boolean;
