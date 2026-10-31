@@ -8,6 +8,10 @@ import { compile, deserializeModule, validateModule } from "../src/index.js";
 interface PrototypeReads {
   wrapper: number;
   dyn: string[];
+  /** dynChecks whose value is a wrapper.booleanPrototype read. */
+  checkedPrototype: number;
+  /** Lowering-fence messages left in the IR (string literals naming SC2020). */
+  fences: string[];
 }
 
 /** `wrapper.booleanPrototype` reads and `dyn.builtinPrototype` kinds in the
@@ -22,17 +26,30 @@ async function prototypeReads(source: string, extension = "js"): Promise<Prototy
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const mod = deserializeModule(await readFile(outPath, "utf8"));
-    const reads: PrototypeReads = { wrapper: 0, dyn: [] };
+    const reads: PrototypeReads = { wrapper: 0, dyn: [], checkedPrototype: 0, fences: [] };
     const visit = (value: unknown): void => {
       if (Array.isArray(value)) {
         for (const item of value) visit(item);
         return;
       }
       if (value === null || typeof value !== "object") return;
-      const node = value as { kind?: unknown; fn?: unknown; args?: { value?: unknown }[] };
+      const node = value as {
+        kind?: unknown;
+        fn?: unknown;
+        args?: { value?: unknown }[];
+        value?: unknown;
+      };
       if (node.kind === "libCall" && node.fn === "wrapper.booleanPrototype") reads.wrapper++;
       if (node.kind === "libCall" && node.fn === "dyn.builtinPrototype")
         reads.dyn.push(String(node.args?.[0]?.value));
+      if (
+        node.kind === "dynCheck" &&
+        (node.value as { kind?: unknown; fn?: unknown } | undefined)?.fn ===
+          "wrapper.booleanPrototype"
+      )
+        reads.checkedPrototype++;
+      if (node.kind === "strLit" && typeof node.value === "string" && node.value.includes("SC2020"))
+        reads.fences.push(node.value);
       for (const child of Object.values(value)) visit(child);
     };
     visit(mod.functions);
@@ -55,6 +72,18 @@ console.log(typeof valueOf, typeof toString, valueOf.call(true), toString.call(f
   // receiver; the dyn.builtinPrototype builder takes only primitives.
   expect(reads.wrapper).toBe(2);
   expect(reads.dyn).toEqual([]);
+});
+
+test("a call on Boolean.prototype lowers without a wrapper-construction site", async () => {
+  // No `new Boolean` or `Object(value)` here, so the checker's Boolean type
+  // keeps its primitive mapping; the prototype object must still reach the
+  // call as the object, not be checked to a boolean or refused.
+  const reads = await prototypeReads(
+    `console.log(Boolean.prototype.valueOf(), Boolean.prototype.toString());\n`,
+  );
+  expect(reads.wrapper).toBe(2);
+  expect(reads.checkedPrototype).toBe(0);
+  expect(reads.fences).toEqual([]);
 });
 
 test("Number.prototype keeps the checked-dynamic prototype builder", async () => {
