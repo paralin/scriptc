@@ -199,7 +199,7 @@ test("every expensive CI job is gated and included in the required test check", 
     else {
       expect(job.if, name).toBe(`\${{ ${full} && needs.lanes.outputs.${lane} == 'true' }}`);
       expect(job.needs, name).toContain("lanes");
-      expect(["linux", "macos", "effects", "bootstrap"], name).toContain(lane);
+      expect(["linux", "macos", "effects", "bootstrap", "profile"], name).toContain(lane);
     }
     expect(workflow.jobs.test!.needs, name).toContain(name);
   }

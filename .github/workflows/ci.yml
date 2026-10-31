@@ -88,6 +88,7 @@ jobs:
       macos: ${{ steps.lanes.outputs.macos }}
       effects: ${{ steps.lanes.outputs.effects }}
       bootstrap: ${{ steps.lanes.outputs.bootstrap }}
+      profile: ${{ steps.lanes.outputs.profile }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'pull_request'
@@ -100,9 +101,9 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\n' | tee -a "$GITHUB_OUTPUT"; }
+          every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\n' | tee -a "$GITHUB_OUTPUT"; }
           if [ "$EVENT" = push ]; then
-            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\n' | tee -a "$GITHUB_OUTPUT"
+            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" != pull_request ]; then
             every
           elif git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
@@ -545,9 +546,11 @@ jobs:
   # inline (11 MB more text at 85.4% than with a fresh one). The seed above
   # builds without the layout, so this build keeps the committed one, as local
   # builds do, and fails below the floor (scripts/build-native-cli-profile.mjs).
+  # It runs on the profile lane, which follows compiler code, code generation
+  # and the native CLI build, where the profile goes stale.
   native_profile:
     needs: [validation_scope, lanes]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.bootstrap == 'true' }}
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.profile == 'true' }}
     name: check (native compiler profile)
     runs-on: ubuntu-24.04
     # The compiler build takes about as long as the seed's on a hosted runner.
@@ -1255,7 +1258,7 @@ jobs:
               lane effects "${{ needs.effects.result }}" "${{ needs.lanes.outputs.effects }}"
               lane three_nodes_san "${{ needs.three_nodes_san.result }}" "${{ needs.lanes.outputs.linux }}"
               lane bootstrap_seed "${{ needs.bootstrap_seed.result }}" "${{ needs.lanes.outputs.bootstrap }}"
-              lane native_profile "${{ needs.native_profile.result }}" "${{ needs.lanes.outputs.bootstrap }}"
+              lane native_profile "${{ needs.native_profile.result }}" "${{ needs.lanes.outputs.profile }}"
               lane bootstrap "${{ needs.bootstrap.result }}" "${{ needs.lanes.outputs.bootstrap }}"
               lane linux_host_clang "${{ needs.linux_host_clang.result }}" "${{ needs.lanes.outputs.linux }}"
               lane ts7_parity "${{ needs.ts7_parity.result }}" "${{ needs.lanes.outputs.linux }}"

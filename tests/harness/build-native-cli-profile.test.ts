@@ -74,7 +74,7 @@ test("CI checks the committed profile in a build that keeps the committed layout
     jobs: Record<string, { if?: string; steps: { run?: string; env?: Record<string, string> }[] }>;
   };
   const job = workflow.jobs.native_profile!;
-  expect(job.if).toContain("needs.lanes.outputs.bootstrap == 'true'");
+  expect(job.if).toContain("needs.lanes.outputs.profile == 'true'");
   const build = job.steps.find((step) => step.run === "pnpm build:native-compiler")!;
   // The check fails the build below FAIL_BELOW. The committed layout must
   // stay in use: the profile was collected with it, and a build without it
