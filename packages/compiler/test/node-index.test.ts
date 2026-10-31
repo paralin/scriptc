@@ -324,3 +324,31 @@ console.log(sum(new Grid(3, values)), digits("a1b22"), paired, apply(values, (v)
   expect(run(new IrNodeIndex(passes))).toBe(walkedPasses);
   expect(walkedPasses).not.toBe(serializeModule(passes));
 });
+
+test("the parameter-version pass reads its loops, sizes and call sites from the index", async () => {
+  const module = await lowerSource(`
+function sumTo(n: number): number {
+  let s = 0;
+  for (let i = 0; i < n; i++) s += i;
+  return s;
+}
+const n = Number(process.argv.length > 5 ? "7.5" : "6");
+console.log(sumTo(n));
+`);
+  const index = new IrNodeIndex(module);
+  const consulted: string[] = [];
+  const spy = {
+    scan: (kinds: readonly IrNodeKind[]) => {
+      consulted.push("scan");
+      return index.scan(kinds);
+    },
+    nodeCount: (fn: IrFunction) => {
+      consulted.push("nodeCount");
+      return index.nodeCount(fn);
+    },
+  } as unknown as IrNodeIndex;
+  const fromIndex = serializeModule(versionLoopBoundParameters(module, undefined, spy));
+  expect(consulted.length).toBeGreaterThan(0);
+  expect(fromIndex).toBe(serializeModule(versionLoopBoundParameters(module, undefined)));
+  expect(fromIndex).not.toBe(serializeModule(module));
+});
