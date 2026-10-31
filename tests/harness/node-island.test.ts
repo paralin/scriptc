@@ -463,6 +463,56 @@ export function readProbe(): string {
       });
     }, 300_000);
 
+    test("a reader whose island subgraph loads a module by a computed specifier is SC8006", async () => {
+      // The pi shape past the reader rule (provider-env.ts): an islanded user
+      // module statically imports a program module that loads by a computed
+      // specifier. The island tree cannot ship that module, so the build
+      // reports SC8006 — it used to throw the collection's PoisonError
+      // through the driver instead, a stack trace and no diagnostic.
+      const dir = copyCorpus(
+        "reader-computed-import",
+        `import { installPatch } from "./patch.ts";
+import { readProbe } from "./read.ts";
+installPatch();
+console.log(readProbe());
+`,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched payload") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+`,
+          "read.ts": `import { loadByName } from "./helper.ts";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+export function readProbe(): string {
+  void loadByName;
+  const { readFileSync } = require("fs") as {
+    readFileSync(path: string, encoding: BufferEncoding): string;
+  };
+  return readFileSync("/scriptc/does/not/exist", "utf-8");
+}
+`,
+          "helper.ts": `export function loadByName(name: string): Promise<unknown> {
+  return import(name);
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      const problem = result.diagnostics.find((d) => d.code === "SC8006");
+      expect(problem?.message).toContain("helper.ts");
+      expect(problem?.message).toContain("import() with a computed specifier");
+    }, 300_000);
+
     test("the entry module reading a patched member is SC8006", async () => {
       const dir = copyCorpus(
         "entry-reader",
