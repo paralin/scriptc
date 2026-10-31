@@ -3,6 +3,7 @@ import { lowerStaticPrivateRead } from "../private-statics.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import { jsSpecialGlobalValue } from "../global-values.js";
+import { globalFunctionValue } from "../global-function-values.js";
 import {
   arrayClassMemberOwner,
   arrayClassReceiver,
@@ -132,7 +133,7 @@ import {
 } from "../lower-node-module.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { typedArrayLacksMember } from "../builtins/typed-array-members.js";
-import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
+import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
   applyDeferredAssertion,
@@ -1032,8 +1033,10 @@ export function lowerPropertyAccessExpr(
     const canonical = stdlibGlobalNameOf(lowerer, expr);
     if (canonical !== null) {
       if (canonical === "globalThis") return lowerGlobalValue(lowerer, expr);
-      // Typed for the programs that name it, absent in Node 24.
-      if (canonical === TEMPORAL_GLOBAL) return dynUndefinedExpr(loc);
+      // Typed for the programs that name it, absent in Node 24, and the
+      // CommonJS module bindings, which the global object does not hold.
+      if (canonical === TEMPORAL_GLOBAL || COMMONJS_MODULE_BINDINGS.has(canonical))
+        return dynUndefinedExpr(loc);
       const value = jsSpecialGlobalValue(lowerer, canonical, loc);
       if (value) return value;
       return (
@@ -5358,7 +5361,9 @@ export function builtinGlobalValueAt(
   const namespace = js ? builtinNamespaceValue(lowerer, canonical, loc) : null;
   if (namespace !== null) return namespace;
   if (readsBuiltinGlobalMembers(expr)) return null;
-  const value = builtinGlobalValue(canonical, loc, js);
+  const value =
+    builtinGlobalValue(canonical, loc, js) ??
+    (js ? globalFunctionValue(lowerer, canonical, loc) : null);
   if (value === null) return null;
   let node: ts.Node = expr;
   while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;

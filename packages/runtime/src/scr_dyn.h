@@ -1122,6 +1122,9 @@ bool scr_dyn_checked_record_frozen(const ScrDyn *value);
 ScrDyn *scr_dyn_new_bigint(ScrBigInt *value); /* borrows and retains value */
 ScrDyn *scr_dyn_new_symbol(ScrSym *value); /* borrows and retains value */
 ScrSym *scr_sym_well_known(ScrStr *name);
+/* Symbol.keyFor through a function value: the registry key, undefined, or
+ * NULL with Node's TypeError for a value that is not a symbol (+1). */
+ScrDyn *scr_dyn_symbol_key_for(const ScrDyn *value);
 ScrDyn *scr_dyn_symbol_get(const ScrDyn *value, const ScrStr *key);
 ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool optional);
 /* `using` and `await using` with a dyn value. scr_dyn_using_method runs the
@@ -1355,6 +1358,9 @@ void scr_builtin_statics_install(ScrDyn *lookup);
  * change or reflection; a builtin constructor's static members become own
  * properties of the table the first time. */
 extern SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table);
+/* Installed with scr_dyn_builtin_static_fn: the name of the builtin
+ * constructor `fn` is (borrowed, static storage), or NULL. */
+extern SCR_TL const char *(*scr_dyn_builtin_owner_fn)(const ScrDyn *fn);
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key);
 /* A typed array's, Buffer's or DataView's own named property (+1), or NULL
  * without an exception when it has none. */
