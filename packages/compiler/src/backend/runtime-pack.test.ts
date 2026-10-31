@@ -20,6 +20,7 @@ import { createNativeLinkPlan } from "./link-plan.js";
 import {
   executableLinkerEnvironmentFingerprint,
   linkNativeExecutable,
+  missingLinkDriverMessage,
   platformLinkerSupportsPersistentCache,
   resolvePlatformLinker,
 } from "./linker.js";
@@ -506,6 +507,83 @@ describe("runtime pack manifests", () => {
         () => false,
       ),
     ).toBe(false);
+  });
+
+  test("a link driver the host cannot execute reports what to install", async () => {
+    const { root, packagePath } = await fixture();
+    const programObject = join(root, "program.o");
+    await writeFile(programObject, "program object");
+    const plan = await createNativeLinkPlan({
+      target: MACOS_ARM64_TARGET,
+      programObject,
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release",
+      resolver: () => packagePath,
+    });
+    const linker = join(root, "missing-linker");
+
+    await expect(linkNativeExecutable(plan, { linker })).rejects.toMatchObject({
+      name: "CcCompileError",
+      driver: linker,
+      message: expect.stringContaining(
+        `cannot run the link driver "${linker}": the host has no missing-linker executable.`,
+      ),
+    });
+  });
+
+  test("a dev build whose link succeeds but cannot run dsymutil names dsymutil", async () => {
+    const { root, packagePath } = await fixture();
+    const programObject = join(root, "program.o");
+    const linker = join(root, "linker.mjs");
+    await Promise.all([
+      writeFile(programObject, "program object"),
+      writeFile(
+        linker,
+        [
+          "#!/usr/bin/env node",
+          'import { writeFileSync } from "node:fs";',
+          'const outputIndex = process.argv.indexOf("-o");',
+          'writeFileSync(process.argv[outputIndex + 1], "linked executable");',
+          "",
+        ].join("\n"),
+      ),
+    ]);
+    await chmod(linker, 0o755);
+    const plan = await createNativeLinkPlan({
+      target: MACOS_ARM64_TARGET,
+      programObject,
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "dev",
+      resolver: () => packagePath,
+    });
+    expect(plan.darwinDebugSymbols).toBe(true);
+
+    const failure = await linkNativeExecutable(plan, { linker }).then(
+      () => null,
+      (error: unknown) => error as { name?: string; driver?: string; message?: string },
+    );
+    expect(failure?.name).toBe("CcCompileError");
+    expect(failure?.driver).toBe("dsymutil");
+    expect(failure?.message).toContain("dsymutil failed to collect the debug symbols for program:");
+    expect(failure?.message).not.toContain("cannot run the link driver");
+  });
+
+  test("a missing driver names the toolchain its target links with", () => {
+    const enoent = Object.assign(new Error("spawn zig ENOENT"), { code: "ENOENT" });
+    expect(missingLinkDriverMessage(enoent, "zig", "win32")).toContain(
+      "Windows targets link with Zig",
+    );
+    expect(missingLinkDriverMessage(enoent, "/usr/bin/clang", "darwin")).toContain(
+      "xcode-select --install",
+    );
+    expect(missingLinkDriverMessage(enoent, "clang", "linux")).toContain("apt install clang");
+    expect(missingLinkDriverMessage(enoent, "cc", "linux")).toContain("Install cc");
+    expect(missingLinkDriverMessage(enoent, "zig", "wasi")).toContain("ziglang.org/download");
+    expect(missingLinkDriverMessage(new Error("zig exited 1"), "zig", "win32")).toBeNull();
   });
 
   test("links a private verified copy when the installed artifact changes during linking", async () => {

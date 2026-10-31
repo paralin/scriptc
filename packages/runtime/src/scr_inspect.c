@@ -2418,7 +2418,11 @@ static ScrDyn *insp_user_options(double depth) {
   insp_opt_set(options, "stylize",
                scr_dyn_new_func(closure, insp_stylize_call, 2, "native:util.stylize",
                                 g_colors ? "stylizeWithColor" : "stylizeNoColor"));
-  insp_opt_set(options, "showHidden", scr_dyn_new_bool(false));
+  /* The callback's showHidden describes the walk it runs inside: %o renders
+   * with hidden properties, so its custom inspectors see true, and %O,
+   * util.inspect and console.log see false. Nested calls start from their
+   * own defaults through scr_insp_custom_call_begin. */
+  insp_opt_set(options, "showHidden", scr_dyn_new_bool(g_show_hidden));
   insp_opt_set(options, "depth",
                isfinite(depth)      ? scr_dyn_new_num(depth)
                : g_depth_kind == 0  ? scr_dyn_new_num(g_depth_number)
