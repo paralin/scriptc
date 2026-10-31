@@ -15591,7 +15591,11 @@ export class Lowerer {
    * call runs for its effects (it throws or exits), and the expression ends
    * in an unreachable trap instead of producing a value. The result reads an
    * uninitialized hidden local that control never reaches. */
-  divergentValue(call: IrExpr, expected: IrType): IrExpr {
+  divergentValue(
+    call: IrExpr,
+    expected: IrType,
+    message = "unreachable: a 'never' call returned — please report this",
+  ): IrExpr {
     const loc = call.loc;
     const slot = this.declareHiddenLocal("%never", expected);
     slot.mutable = true;
@@ -15603,7 +15607,7 @@ export class Lowerer {
         {
           kind: "runtimeFence",
           code: "SC9002",
-          message: "unreachable: a 'never' call returned — please report this",
+          message,
           loc,
         },
       ],
