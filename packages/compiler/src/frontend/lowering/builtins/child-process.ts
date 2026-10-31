@@ -421,9 +421,11 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     };
   }
   if (extOptions) {
-    // Node IGNORES `input` when stdio[0] takes the child's fd 0 away
+    // Node ignores `input` when stdio[0] takes the child's fd 0 away
     // ("ignore" is /dev/null, "inherit" the parent's): the option is dead
-    // there, not a pipe.
+    // there, not a pipe. Its expression still runs — Node evaluates the
+    // member before the call — so it stays an argument, and `has_input`
+    // false keeps it out of the child's stdin.
     const ignoreInput = !stdinPiped;
     return {
       kind: "libCall",
@@ -437,7 +439,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         numLit(outMode, loc),
         numLit(errMode, loc),
         cwd,
-        ignoreInput ? emptyStr : input,
+        input,
         ignoreInput ? boolLit(false, loc) : hasInput,
         shell,
         ...(envPairs !== null ? [envPairs] : []),
