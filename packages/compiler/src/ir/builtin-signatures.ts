@@ -480,6 +480,12 @@ function buildLibFnSignatures() {
      * setInterval and 2 for a node:timers import, plus 4 for a delay read
      * from an array element. */
     "timers.userDelay": { argTypes: [F64, F64], result: F64 },
+    /** A timer callback that runs with `this` bound to its handle, as Node
+     * calls it with the Timeout or Immediate (scr_timer_this_callback). */
+    "timers.thisCallback": {
+      argTypes: [{ kind: "func", params: [], ret: VOID }],
+      result: { kind: "func", params: [], ret: VOID },
+    },
     /** The repeating timer pair. setInterval takes (callback, ms) like
      * setTimeout and RETURNS the f64 handle the fallback declarations
      * promise (ids start at 1, so truthiness narrowing works); the loop

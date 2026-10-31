@@ -384,7 +384,9 @@ function lowerTimerCall(
         `the supported form is ${member}(callback, ms?, ...args)`,
       );
     }
-    const cb =
+    const cb = withTimerThis(
+      lowerer,
+      expr.arguments.nodes[0]!,
       expr.arguments.nodes.length > 2
         ? makeTimerArgsThunk(
             lowerer,
@@ -398,7 +400,9 @@ function lowerTimerCall(
             lowerer.lowerExpr(expr.arguments.nodes[0]!),
             expr.arguments.nodes[0]!,
             loc,
-          );
+          ),
+      loc,
+    );
     // An omitted delay is NaN, Node's undefined: the loop clamps it to
     // 1ms, and mock.timers queues it to run at the next tick.
     let warned = false;
@@ -517,7 +521,10 @@ function lowerTimerCall(
     // historic fire-and-forget setTimeout, no clear surface). Both ride
     // the same heap; only the handle form can be unref'd/cleared.
     const resultT = lowerer.mapTypeOf(lowerer.typeOf(expr));
-    if (resultT?.kind === "f64" && !ts.isExpressionStatement(expr.parent)) {
+    // A callback bound to its handle needs one, also in statement
+    // position.
+    const bindsThis = cb.kind === "libCall" && cb.fn === "timers.thisCallback";
+    if (bindsThis || (resultT?.kind === "f64" && !ts.isExpressionStatement(expr.parent))) {
       return scheduled({
         kind: "libCall",
         fn: "timers.setTimeoutHandle",
@@ -542,26 +549,7 @@ function lowerTimerCall(
     if (expr.arguments.nodes.length !== 1) {
       lowerer.noLowering(`clearTimeout with ${expr.arguments.nodes.length} arguments`, expr);
     }
-    let handle = lowerer.lowerExpr(expr.arguments.nodes[0]!);
-    if (handle.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-      const stored = lowerer.declareHiddenLocal("%timer.clear", DYN);
-      const ref = varRef(stored.id, DYN, loc);
-      handle = {
-        kind: "seqExpr",
-        stmts: [{ kind: "varDecl", localId: stored.id, init: handle, loc }],
-        result: {
-          kind: "ternary",
-          cond: { kind: "dynTest", test: "number", value: ref, type: BOOL, loc },
-          then: lowerer.coerceInto(expr.arguments.nodes[0]!, ref, F64),
-          else_: numLit(0, loc),
-          type: F64,
-          loc,
-        },
-        type: F64,
-        loc,
-      };
-    }
-    handle = optionalTimerHandle(lowerer, handle, loc);
+    const handle = optionalTimerHandle(lowerer, untypedTimerHandle(lowerer, expr, loc), loc);
     if (handle.type.kind !== "f64") {
       lowerer.noLowering(
         `clearTimeout of '${lowerer.fmt(handle.type)}' handles`,
@@ -577,7 +565,7 @@ function lowerTimerCall(
     if (expr.arguments.nodes.length !== 1) {
       lowerer.noLowering(`clearInterval with ${expr.arguments.nodes.length} arguments`, expr);
     }
-    const handle = optionalTimerHandle(lowerer, lowerer.lowerExpr(expr.arguments.nodes[0]!), loc);
+    const handle = optionalTimerHandle(lowerer, untypedTimerHandle(lowerer, expr, loc), loc);
     if (handle.type.kind !== "f64") {
       lowerer.noLowering(
         `clearInterval of '${lowerer.fmt(handle.type)}' handles`,
@@ -598,7 +586,9 @@ function lowerTimerCall(
         "the supported form is setImmediate(callback, ...args)",
       );
     }
-    const cb =
+    const cb = withTimerThis(
+      lowerer,
+      expr.arguments.nodes[0]!,
       expr.arguments.nodes.length > 1
         ? makeTimerArgsThunk(
             lowerer,
@@ -612,7 +602,9 @@ function lowerTimerCall(
             lowerer.lowerExpr(expr.arguments.nodes[0]!),
             expr.arguments.nodes[0]!,
             loc,
-          );
+          ),
+      loc,
+    );
     return { kind: "libCall", fn: "timers.setImmediate", args: [cb], type: F64, loc };
   }
   if (member === "clearImmediate") {
@@ -621,7 +613,7 @@ function lowerTimerCall(
     if (expr.arguments.nodes.length !== 1) {
       lowerer.noLowering(`clearImmediate with ${expr.arguments.nodes.length} arguments`, expr);
     }
-    const handle = optionalTimerHandle(lowerer, lowerer.lowerExpr(expr.arguments.nodes[0]!), loc);
+    const handle = optionalTimerHandle(lowerer, untypedTimerHandle(lowerer, expr, loc), loc);
     if (handle.type.kind !== "f64") {
       lowerer.noLowering(
         `clearImmediate of '${lowerer.fmt(handle.type)}' handles`,
@@ -632,6 +624,73 @@ function lowerTimerCall(
     return { kind: "libCall", fn: "timers.clearImmediate", args: [handle], type: VOID, loc };
   }
   return null;
+}
+
+/** The handle argument of a clear call. A checked-dynamic handle in
+ * JavaScript (a timer callback's `this`, an untyped binding) clears when it
+ * holds a number, the handle's representation; any other value clears
+ * nothing, as Node's clear functions ignore values that are not timers. */
+function untypedTimerHandle(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const handle = lowerer.lowerExpr(expr.arguments.nodes[0]!);
+  if (handle.type.kind !== "dyn" || !isJsSourceFile(ts.getSourceFileOfNode(expr))) return handle;
+  const stored = lowerer.declareHiddenLocal("%timer.clear", DYN);
+  const ref = varRef(stored.id, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: stored.id, init: handle, loc }],
+    result: {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "number", value: ref, type: BOOL, loc },
+      then: lowerer.coerceInto(expr.arguments.nodes[0]!, ref, F64),
+      else_: numLit(0, loc),
+      type: F64,
+      loc,
+    },
+    type: F64,
+    loc,
+  };
+}
+
+/** A JavaScript timer callback that may read `this` runs with `this`
+ * bound to its handle, as Node calls it with the Timeout or Immediate
+ * (scr_timer_this_callback). Arrows, and function expressions and
+ * declarations whose bodies never read `this`, keep the plain callback;
+ * any other value (test/common's mustCall wrapper, which forwards `this`)
+ * is bound. TypeScript files keep plain callbacks: a plain function's
+ * `this` is refused there. */
+function withTimerThis(lowerer: Lowerer, node: ts.Expression, cb: IrExpr, loc: SrcLoc): IrExpr {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(node)) || !callbackMayReadThis(lowerer, node))
+    return cb;
+  const fnT: IrType = { kind: "func", params: [], ret: VOID };
+  const callable: IrExpr =
+    cb.type.kind === "func" ? cb : { kind: "dynCheck", value: cb, type: fnT, loc };
+  return { kind: "libCall", fn: "timers.thisCallback", args: [callable], type: fnT, loc };
+}
+
+function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
+  let callback = node;
+  while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
+  if (ts.isArrowFunction(callback)) return false;
+  if (ts.isFunctionExpression(callback)) return readsOwnThis(callback.body);
+  if (ts.isIdentifier(callback)) {
+    const declaration = lowerer.resolveValueSymbol(callback)?.valueDeclaration;
+    if (declaration && ts.isFunctionDeclaration(declaration) && declaration.body)
+      return readsOwnThis(declaration.body);
+  }
+  return true;
+}
+
+/** Whether `node` reads the enclosing function's `this`: a `this` outside
+ * nested non-arrow functions and classes, which bind their own. */
+function readsOwnThis(node: ts.Node): boolean {
+  if (node.kind === ts.SyntaxKind.ThisKeyword) return true;
+  if (
+    (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) ||
+    ts.isClassDeclaration(node) ||
+    ts.isClassExpression(node)
+  )
+    return false;
+  return ts.forEachChild(node, (child) => (readsOwnThis(child) ? true : undefined)) === true;
 }
 
 /** `timers.userDelay(ms, kind)`: the delay, after the warning Node's

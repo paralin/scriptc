@@ -1330,6 +1330,12 @@ void scr_set_timeout(ScrClosure *cb, double ms) {
 
 static SCR_TL unsigned long scr_interval_next_id = 1;
 static SCR_TL unsigned long scr_firing_id = 0; /* interval currently running */
+/* The immediate whose callback is running (0 outside one). */
+static SCR_TL unsigned long scr_immediate_firing = 0;
+
+double scr_timer_running_handle(void) {
+  return (double)(scr_immediate_firing != 0 ? scr_immediate_firing : scr_firing_id);
+}
 static SCR_TL bool scr_firing_cleared = false;
 static SCR_TL bool scr_firing_reffed = true;  /* the running interval's ref state */
 static SCR_TL bool scr_firing_refresh = false; /* refresh() called mid-callback */
@@ -6147,7 +6153,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
           scr_immediates[i].reffed = false;
           if (scr_reffed_immediates > 0) scr_reffed_immediates--;
         }
+        scr_immediate_firing = scr_immediates[i].id;
         ((void (*)(ScrClosure *))cb->fn)(cb);
+        scr_immediate_firing = 0;
         scr_closure_release(cb);
         if (scr_exc_pending()) return false; /* uncaught throw: main handles it */
 #ifdef SCR_NODE_ISLANDS
