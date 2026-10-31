@@ -64,10 +64,19 @@ export interface EarlyExecutableNativeFeatures {
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;
+  recordViewPartial?: boolean;
   stdioExtended?: boolean;
+  fsFlags?: boolean;
+  strdecDyn?: boolean;
+  processExtras?: boolean;
+  /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
+  streamWriteErrors?: boolean;
+  /** The process output write slot: SCR_STDIO_WRITE_SLOT. */
+  stdioWriteSlot?: boolean;
   nodeIsland?: boolean;
   moduleNamespace?: boolean;
   moduleNamespaceDyn?: boolean;
+  primitiveWrapper?: boolean;
   zlib: boolean;
   brotli?: boolean;
   assert: boolean;
@@ -82,6 +91,7 @@ export interface EarlyExecutableNativeFeatures {
   declAdopt?: boolean;
   typeOrigins?: boolean;
   dynForAwait?: boolean;
+  dynIntegrityQueries?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
@@ -94,11 +104,21 @@ export interface EarlyExecutableNativeFeatures {
   emitter: boolean;
   symbol: boolean;
   bigint: boolean;
+  /** BigIntStats member reads: scr_stats_bigint.c. Absent (false) otherwise. */
+  bigstats?: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source: scr_dyn_stdlib_prototype.c. */
+  stdlibPrototypeValue?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
   dynBuiltinClass: boolean;
   dynBuiltinStream: boolean;
+  /** Array.prototype methods over array-like receivers: scr_dyn_array_like.c. */
+  arrayLikeDispatch?: boolean;
+  /** Number.prototype and Boolean.prototype as values:
+   * scr_dyn_builtin_prototype.c. */
+  builtinPrototypeValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -109,6 +129,8 @@ export interface EarlyExecutableNativeFeatures {
   dgramDyn: boolean;
   textCodecDyn: boolean;
   watch: boolean;
+  watchFile: boolean;
+  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
@@ -121,6 +143,8 @@ export interface EarlyExecutableNativeFeatures {
   perfLoop: boolean;
   tlsCa: boolean;
   webcrypto: boolean;
+  /** Intl over ICU (scr_intl.c, the ICU archive and its data file). */
+  intl?: boolean;
 }
 
 interface EarlyExecutableCacheStamp {
@@ -137,6 +161,8 @@ interface EarlyExecutableCacheStamp {
   native: EarlyExecutableNativeFeatures;
   /** The build's performance warnings (SC61xx), which a cache hit repeats. */
   performance?: ScrDiagnostic[];
+  /** The Node islands the build ran, which a cache hit reports again. */
+  islands?: { packages: string[]; modules: string[] };
   /** Programs that call into Node.js: the libnode pack identity the build
    * recorded (EarlyExecutableCacheOptions.libnodeIdentity). */
   libnode?: string;
@@ -170,6 +196,8 @@ export interface EarlyExecutableCacheOptions {
   libnodeIdentity?: () => string | undefined;
   /** Omitted unless --large-pages is set. */
   largePages?: true;
+  /** Omitted unless the build links without huge text (CompileOptions.hugeText). */
+  noHugeText?: true;
   /** Omitted unless --exceptions=rare is set. */
   exceptions?: "rare";
   /** Omitted for the x86-64 baseline (`--target-cpu`). */
@@ -194,6 +222,9 @@ export interface EarlyExecutableCacheOptions {
   /** Omitted unless shape inference's overlay compiles the packages
    * (frontend/shape-inference). */
   shapeOverlay?: true;
+  /** Omitted unless shape inference types the program's own JavaScript
+   * (SCRIPTC_INFER_JS=1, frontend/js-inference.ts). */
+  jsInference?: true;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
   ffiProfile: { path: string; bytes: Uint8Array } | null;
@@ -247,12 +278,24 @@ export interface EarlyExecutableCacheHit {
   frontend: FrontendInputSnapshot;
   /** The performance warnings the build reported (SC61xx), repeated on a hit. */
   performance?: ScrDiagnostic[];
+  /** The Node islands the build ran, repeated on a hit. */
+  islands?: { packages: string[]; modules: string[] };
   /** How a --profile-use build's profile matched, reported again on a hit. */
   profileMatch?: NativeProfileMatch;
 }
 
 export interface EarlyExecutableCachePublish extends EarlyExecutableCacheHit {
   nativeDependencies?: NativeArtifactDependency[];
+}
+
+function isIslands(value: unknown): value is { packages: string[]; modules: string[] } {
+  if (typeof value !== "object" || value === null) return false;
+  const islands = value as Record<string, unknown>;
+  return (
+    Array.isArray(islands.packages) &&
+    Array.isArray(islands.modules) &&
+    [...islands.packages, ...islands.modules].every((item) => typeof item === "string")
+  );
 }
 
 function isProfileMatch(value: unknown): value is NativeProfileMatch {
@@ -295,6 +338,8 @@ const BOOLEAN_NATIVE_KEYS = [
   "dgramDyn",
   "textCodecDyn",
   "watch",
+  "watchFile",
+  "fsBufferBrand",
   "foreignFfi",
   "nodeTest",
   "tls",
@@ -341,6 +386,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
     ...(options.largePages ? ["large-pages"] : []),
+    ...(options.noHugeText ? ["no-huge-text"] : []),
     ...(options.exceptions === "rare" ? ["exceptions-rare"] : []),
     ...targetCpuKeyParts(options.targetCpu),
     ...cpuDispatchKeyParts(options.cpuDispatch),
@@ -350,6 +396,8 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.youngNursery ? ["young-nursery"] : []),
     ...(options.nodeIslands !== undefined ? [`node-islands:${options.nodeIslands}`] : []),
     ...(options.heapCensus ? ["heap-census"] : []),
+    ...(options.shapeOverlay ? ["shape-overlay"] : []),
+    ...(options.jsInference ? ["js-inference"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -391,6 +439,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
   if (options.largePages) hash.update("large-pages\0");
+  if (options.noHugeText) hash.update("no-huge-text\0");
   if (options.exceptions === "rare") hash.update("exceptions-rare\0");
   for (const part of targetCpuKeyParts(options.targetCpu)) hash.update(`${part}\0`);
   for (const part of cpuDispatchKeyParts(options.cpuDispatch)) hash.update(`${part}\0`);
@@ -400,6 +449,8 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.youngNursery) hash.update("young-nursery\0");
   if (options.nodeIslands !== undefined) hash.update(`node-islands:${options.nodeIslands}\0`);
   if (options.heapCensus) hash.update("heap-census\0");
+  if (options.shapeOverlay) hash.update("shape-overlay\0");
+  if (options.jsInference) hash.update("js-inference\0");
   hash
     .update(
       options.npmStatic === null
@@ -730,6 +781,7 @@ async function readExecutableCache(
       ...(Array.isArray(stamp.performance) && stamp.performance.length > 0
         ? { performance: stamp.performance }
         : {}),
+      ...(isIslands(stamp.islands) ? { islands: stamp.islands } : {}),
       ...(isProfileMatch(stamp.profileMatch) ? { profileMatch: stamp.profileMatch } : {}),
       ...(ir === null ? {} : { irPath: paths.irPath }),
       ...(llvmSourcePath === undefined ? {} : { llvmSourcePath }),
@@ -921,6 +973,7 @@ export async function publishEarlyExecutableCache(
       ...(result.performance === undefined || result.performance.length === 0
         ? {}
         : { performance: result.performance }),
+      ...(result.islands === undefined ? {} : { islands: result.islands }),
       ...(result.native.nodeIsland === true ? { libnode: options.libnodeIdentity?.() ?? "" } : {}),
       ...(result.profileMatch === undefined ? {} : { profileMatch: result.profileMatch }),
     };

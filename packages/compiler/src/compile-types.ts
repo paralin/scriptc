@@ -57,6 +57,12 @@ export interface CompileBaseOptions {
    * at startup when the system allows them. The moved code stays resident.
    * Executables only; no effect on other platforms. */
   largePages?: boolean;
+  /** Internal: `false` links a Linux executable with 4 KiB segment alignment
+   * even when its program code is large enough for text on huge pages
+   * (backend/huge-text.ts). The scriptc CLI is linked this way
+   * (scripts/build-native-cli.mts): most of its runs are short, and a short
+   * run maps every 2 MiB text window it touches whole. */
+  hugeText?: false;
   /** How often the program throws (`--exceptions`). `rare` puts recursive
    * functions and those near a `throw` on the unwinding exception ABI too:
    * calls to them need no pending-flag test, and an exception that crosses
@@ -159,6 +165,10 @@ export type CompileFailure = {
 export interface CompileWarnings {
   warnings?: ScrDiagnostic[];
   sourceTexts?: Map<string, string>;
+  /** The Node islands the build ran: the npm packages and the program
+   * modules (absolute file paths). Reported again on an executable cache
+   * hit, so a runner can tell an island result from a native one. */
+  islands?: { packages: string[]; modules: string[] };
 }
 
 export type CompileSourceResult =

@@ -533,6 +533,16 @@ ScrStr *scr_insp_ref_wrap(const void *v, ScrStr *s) {
 
 /* formatRaw's Date base: toISOString(), or toString()'s "Invalid Date"
  * when the time value is NaN (the only time value outside the ISO range). */
+/* util.inspect's placeholder past the depth limit for an instance whose
+ * inspector returns `this` there: `[cls]`, in the special style. */
+static ScrStr *insp_bracketed_class(const char *cls) {
+  InspBuf out = {0};
+  ib_char(&out, '[');
+  ib_cstr(&out, cls);
+  ib_char(&out, ']');
+  return insp_styled(ib_take(&out), INSP_SPECIAL);
+}
+
 ScrStr *scr_insp_date(double ms) {
   if (isnan(ms)) return scr_str_new("Invalid Date", 12);
   return scr_date_to_iso(ms);
@@ -1708,7 +1718,48 @@ static bool insp_obj_shows(const ScrDynProp *ent) {
   return ent->enumerable || (g_show_hidden && !(ent->key_len && ent->key[0] == '%'));
 }
 
+/* The @@toStringTag Node brackets after a plain object's prefix
+ * (`Object [Math] {}`), +1: a nonempty string read through the object and
+ * its prototypes, unless the object's own tag is listed with its keys
+ * (an enumerable one, or any under showHidden). NULL otherwise, and when
+ * the tag's getter throws, as in Node. */
+static ScrStr *insp_plain_object_tag(ScrDyn *d) {
+  const ScrDyn *key = scr_dyn_to_string_tag_symbol();
+  if (!key) return NULL;
+  ScrDynProp own;
+  if (scr_dyn_own_symbol_prop(d, key, &own) && (own.enumerable || g_show_hidden)) return NULL;
+  ScrDyn *tag = scr_dyn_symbol_key_get(d, key, true);
+  if (!tag) {
+    if (scr_exc_pending()) scr_exc_clear();
+    return NULL;
+  }
+  ScrStr *out = tag->kind == SCR_DYN_STR && tag->v.str->len ? scr_str_retain(tag->v.str) : NULL;
+  scr_dyn_release(tag);
+  return out;
+}
+
+/* Node's getPrefix for a plain object, without the trailing space: "",
+ * "Object [tag]" ("Object" for the tag "Object"), or the null-prototype
+ * marker followed by " [tag]". +1. */
+static ScrStr *insp_plain_object_prefix(const ScrDyn *d, const ScrStr *tag) {
+  InspBuf out = {0};
+  if (d->null_proto) ib_cstr(&out, "[Object: null prototype]");
+  else if (tag) ib_cstr(&out, "Object");
+  if (tag && !(tag->len == 6 && memcmp(tag->data, "Object", 6) == 0)) {
+    ib_cstr(&out, " [");
+    ib_bytes(&out, tag->data, tag->len);
+    ib_char(&out, ']');
+  }
+  return ib_take(&out);
+}
+
 static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char *cls) {
+  /* A plain object with a tag takes Node's tagged prefix in all three
+   * forms: `Object [Math] {}`, `[Object [Math]]` past the depth limit,
+   * and `Object [Math] { key: value }`. */
+  ScrStr *tag = cls ? NULL : insp_plain_object_tag(d);
+  ScrStr *tagged = tag ? insp_plain_object_prefix(d, tag) : NULL;
+  if (tag) scr_str_release(tag);
   size_t shown = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
@@ -1718,6 +1769,15 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
   for (size_t i = 0; i < nsymbols; i++) {
     ScrDynProp ent;
     shown += scr_insp_symbol_entry(d, i, &ent);
+  }
+  if (tagged && (shown == 0 || recurse > depth)) {
+    InspBuf out = {0};
+    bool bracket = shown != 0 && !d->null_proto;
+    if (bracket) ib_char(&out, '[');
+    ib_bytes(&out, tagged->data, tagged->len);
+    ib_cstr(&out, bracket ? "]" : shown == 0 ? " {}" : "");
+    scr_str_release(tagged);
+    return shown == 0 ? ib_take(&out) : insp_styled(ib_take(&out), INSP_SPECIAL);
   }
   if (shown == 0) {
     if (cls) return scr_insp_class_tag(cls, " {}");
@@ -1771,6 +1831,7 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
     scr_str_release(entry);
   }
   ScrStr *base = cls             ? scr_str_new(cls, strlen(cls))
+                 : tagged        ? tagged
                  : d->null_proto ? scr_str_new("[Object: null prototype]", 24)
                                  : scr_str_new("", 0);
   ScrStr *b0 = scr_str_new("{", 1);
@@ -2633,8 +2694,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     case SCR_DYN_FUNC:
       return scr_insp_dyn_func(d, recurse, depth);
     case SCR_DYN_HANDLE: {
+      /* TextDecoder's text takes no colors and TextEncoder's view styles
+       * its string, as Node's inspectors do. */
       if (g_colors && d->v.handle.tag != SCR_DYNH_SET && d->v.handle.tag != SCR_DYNH_MAP &&
-          d->v.handle.tag != SCR_DYNH_DATE)
+          d->v.handle.tag != SCR_DYNH_DATE && d->v.handle.tag != SCR_DYNH_TEXT_DECODER &&
+          d->v.handle.tag != SCR_DYNH_TEXT_ENCODER)
         return insp_colors_fence_values(scr_dyn_handle_cls(d));
       if (d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER ||
           d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
@@ -2658,6 +2722,17 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       if (d->v.handle.tag == SCR_DYNH_NODE_ISLAND) return scr_ni_inspect(d, recurse, depth);
 #endif
       const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
+      if (ops->inspect_custom_only && !g_custom_inspect) {
+        if (recurse > depth) return insp_bracketed_class(ops->cls);
+        InspBuf out = {0};
+        ib_cstr(&out, "util.inspect of a ");
+        ib_cstr(&out, ops->cls);
+        ib_cstr(&out, " with customInspect: false is not supported yet");
+        scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
+        return scr_str_new("", 0);
+      }
+      if (ops->inspect_text)
+        return recurse > depth ? insp_bracketed_class(ops->cls) : ops->inspect_text(d->v.handle.ptr);
       if (ops->inspect_view) {
         /* Node's custom inspectors answer the bare class name beyond the
          * depth limit (`depth < 0`); the ones that return `this` there
@@ -2672,11 +2747,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
             return ib_take(&out);
           }
           if (!ops->inspect_bracketed_past_depth) return scr_str_new(ops->cls, strlen(ops->cls));
-          InspBuf out = {0};
-          ib_char(&out, '[');
-          ib_cstr(&out, ops->cls);
-          ib_char(&out, ']');
-          return ib_take(&out);
+          return insp_bracketed_class(ops->cls);
         }
         ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
         if (ops->inspect_view_nested) {
@@ -2691,6 +2762,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         }
         ScrStr *body = scr_insp_dyn(view, recurse, depth);
         scr_dyn_release(view);
+        if (ops->inspect_view_bare) return body;
         InspBuf out = {0};
         if (insp_tag_names_class(ops->to_string_tag, ops->cls)) {
           ib_cstr(&out, ops->to_string_tag);
@@ -3108,6 +3180,63 @@ ScrStr *scr_insp_format(ScrDyn *const *args, size_t argc, const ScrInspFormatOpt
   ops.number = insp_fmt_number;
   ops.inspect = insp_fmt_inspect_full;
   return insp_format_loop(args, argc, o, &ops);
+}
+
+/* new StringDecoder(encoding) with an encoding that may not be a string:
+ * Node's normalizeEncoding. Strings, undefined and null go through
+ * scr_strdec_encoding. Another value matches only as an object whose
+ * `length` is 3 to 9: its string, in lower case, against the names of that
+ * length (slowCases converts it once). Everything else throws
+ * ERR_UNKNOWN_ENCODING, formatted as Node formats it ("Unknown encoding:
+ * %s"). The canonical name (+1), or NULL with the exception pending. */
+ScrStr *scr_strdec_encoding_value(const ScrDyn *enc) {
+  if (enc->kind == SCR_DYN_STR || enc->kind == SCR_DYN_UNDEF || enc->kind == SCR_DYN_NULL)
+    return scr_strdec_encoding(enc);
+  if (insp_fmt_object(enc)) {
+    ScrStr *name = scr_str_new("length", 6);
+    ScrDyn *key = scr_dyn_new_str(name);
+    scr_str_release(name);
+    ScrDyn *length = scr_dyn_reflect_get((ScrDyn *)enc, key, (ScrDyn *)enc);
+    scr_dyn_release(key);
+    if (!length) return NULL;
+    double count = length->kind == SCR_DYN_NUM ? length->v.num : 0;
+    scr_dyn_release(length);
+    static const struct { int length; const char *from; const char *to; } names[] = {
+      {3, "hex", "hex"},         {4, "utf8", "utf8"},           {4, "ucs2", "utf16le"},
+      {5, "utf-8", "utf8"},      {5, "ascii", "ascii"},         {5, "ucs-2", "utf16le"},
+      {6, "base64", "base64"},   {6, "latin1", "latin1"},       {6, "binary", "latin1"},
+      {7, "utf16le", "utf16le"}, {8, "utf-16le", "utf16le"},    {9, "base64url", "base64url"},
+    };
+    if (count >= 3 && count <= 9 && count == (int)count) {
+      ScrStr *text = scr_dyn_string_coerce_js(enc);
+      if (!text) return NULL;
+      const char *match = NULL;
+      for (size_t i = 0; i < sizeof names / sizeof names[0] && !match; i++) {
+        size_t n = strlen(names[i].from);
+        if (names[i].length != (int)count || text->len != n) continue;
+        bool same = true;
+        for (size_t k = 0; k < n && same; k++) {
+          char c = text->data[k];
+          if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+          same = c == names[i].from[k];
+        }
+        if (same) match = names[i].to;
+      }
+      scr_str_release(text);
+      if (match) return scr_str_new(match, strlen(match));
+    }
+  }
+  ScrStr *format = scr_str_new("Unknown encoding: %s", 20);
+  ScrDyn *args[2] = {scr_dyn_new_str(format), (ScrDyn *)enc};
+  scr_str_release(format);
+  ScrInspFormatOptions options;
+  scr_insp_format_defaults(&options, "new StringDecoder");
+  ScrStr *message = scr_insp_format(args, 2, &options);
+  scr_dyn_release(args[0]);
+  if (!message) return NULL;
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_UNKNOWN_ENCODING");
+  scr_str_release(message);
+  return NULL;
 }
 
 /* The formatter over arguments that are all strings, numbers, booleans,

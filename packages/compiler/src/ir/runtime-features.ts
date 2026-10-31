@@ -100,6 +100,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.offWarning",
   "process.onRejectionHandled",
   "process.onUncaughtException",
+  "process.prependUncaughtException",
   "process.onUnhandledRejection",
   "process.onWarning",
   "process.setDeprecationFlag",
@@ -330,18 +331,24 @@ const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "rea
 /** Entry points that link the dyn-invoke unit. */
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
+  "dyn.arrayLikeProtoCall",
+  "dyn.builtinPrototype",
   "dyn.arrayPrototype",
   "dyn.builtinFunction",
   "dyn.builtinMethod",
+  "dyn.stdlibPrototype",
   "dyn.defineProperty",
+  "dyn.definePropertyShapes",
   "child.propsDefine",
   "dyn.defineProps",
+  "dyn.definePropsShapes",
   "dyn.definePrototypeProps",
   "dyn.functionApply",
   "dyn.globalConstructor",
   "dyn.namespaceDefine",
   "dyn.namespaceNew",
   "dyn.objCreateWithProperties",
+  "dyn.objCreateWithPropertiesShapes",
   "dyn.objectTag",
   "stream.dynNative",
   "stream.dynNativePipe",
@@ -404,7 +411,15 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 ]);
 
 /** Entry points that link the querystring unit. */
-const QS_LIB_FNS: ReadonlySet<IrLibFn> = new Set(["qs.parse", "qs.stringify", "qs.unescape"]);
+const QS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "qs.parse",
+  "qs.parseCustom",
+  "qs.stringify",
+  "qs.stringifyCustom",
+  "qs.separator",
+  "qs.unescape",
+  "qs.unescapeBuffer",
+]);
 
 /** Entry points that link the parseArgs unit. */
 const PARSE_ARGS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
@@ -646,7 +661,12 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.offSignal",
   "process.onExit",
   "process.onSignal",
+  "process.prependExit",
+  "process.prependSignal",
   "process.stdio",
+  "process.stdinIsRaw",
+  "process.stdioSlot",
+  "process.stdioWriteDyn",
   "stdin.nextChunk",
   "stdin.onData",
   "stdin.onEnd",
@@ -733,7 +753,7 @@ interface RuleScan {
  * type that needs several units appears in each unit's rule. */
 interface RuntimeFeatureRule {
   initial?: (mod: IrModule) => boolean;
-  scan?: () => RuleScan;
+  scan?: (mod: IrModule) => RuleScan;
   fns?: readonly IrLibFn[];
   prefixes?: readonly string[];
   libCall?: (node: LibCallNode) => boolean;
@@ -837,6 +857,141 @@ export function moduleUsesWebCryptoAsymmetric(mod: IrModule): boolean {
   return webcrypto && named;
 }
 
+/** The typed file reads that answer a ScrBytes: Node answers a Buffer, but
+ * scr_lib.c brands it only in the SCR_FS_BUFFER_BRAND build, so a program
+ * that can observe the difference links that build. */
+const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "fs.readFileSyncBuf",
+  "fs.readFileSyncBytes",
+  "fs.readFdSyncBytes",
+  "fsp.readFileBytes",
+  "fileHandle.readFileBytes",
+]);
+
+/** The bytesIntrinsic searches whose runtime branch reads the brand: a
+ * Buffer viewed as a Uint8Array searches bytes, a plain Uint8Array compares
+ * element values (NaN and out-of-range needles differ). */
+const FS_BUFFER_SEARCH_METHODS: ReadonlySet<string> = new Set([
+  "indexOfElem",
+  "lastIndexOfElem",
+  "includesElem",
+]);
+
+/** Whether a type holds bytes without passing another declaration, collecting
+ * the record and union declarations it references. A boxed function's call
+ * thunk boxes its result, and a checked function's thunk boxes its
+ * arguments, with no dynFrom in the IR. */
+function reachesBytesDirect(t: IrType, deps: string[]): boolean {
+  switch (t.kind) {
+    case "bytes":
+      return true;
+    case "array":
+    case "set":
+      return reachesBytesDirect(t.elem, deps);
+    case "map":
+      return reachesBytesDirect(t.key, deps) || reachesBytesDirect(t.value, deps);
+    case "promise":
+      return reachesBytesDirect(t.inner, deps);
+    case "func":
+      return reachesBytesDirect(t.ret, deps) || t.params.some((p) => reachesBytesDirect(p, deps));
+    case "record":
+      deps.push(`r:${t.shapeId}`);
+      return false;
+    case "union":
+      deps.push(`u:${t.unionId}`);
+      return false;
+    default:
+      return false;
+  }
+}
+
+/** The module's declarations that can hold bytes, resolved to a fixpoint: a
+ * record or union that references another declaration holding bytes holds
+ * bytes, and a recursive declaration resolves like a non-recursive one. The
+ * closure answers each reference from one pass over the declarations instead
+ * of walking the shape tree at every reference. */
+function bytesCarryingDecls(mod: IrModule): (t: IrType) => boolean {
+  const referrers = new Map<string, string[]>();
+  const carrying = new Set<string>();
+  const queue: string[] = [];
+  const direct = (id: string, t: IrType): void => {
+    const deps: string[] = [];
+    if (reachesBytesDirect(t, deps)) {
+      if (!carrying.has(id)) {
+        carrying.add(id);
+        queue.push(id);
+      }
+    }
+    for (const dep of deps) {
+      const list = referrers.get(dep);
+      if (list === undefined) referrers.set(dep, [id]);
+      else list.push(id);
+    }
+  };
+  for (const record of mod.records ?? []) {
+    for (const field of record.fields) direct(`r:${record.id}`, field.type);
+    if (record.indexValue !== undefined) direct(`r:${record.id}`, record.indexValue);
+  }
+  for (const union of mod.unions ?? []) {
+    for (const arm of union.arms) direct(`u:${union.id}`, arm);
+  }
+  for (let i = 0; i < queue.length; i++) {
+    for (const from of referrers.get(queue[i]!) ?? []) {
+      if (carrying.has(from)) continue;
+      carrying.add(from);
+      queue.push(from);
+    }
+  }
+  const deps: string[] = [];
+  const holdsBytes = (t: IrType): boolean => {
+    deps.length = 0;
+    if (reachesBytesDirect(t, deps)) return true;
+    for (const dep of deps) if (carrying.has(dep)) return true;
+    return false;
+  };
+  return holdsBytes;
+}
+
+/** fsBufferBrand's condition as a scan over the module: it reads file bytes
+ * through a typed read and can observe their Buffer-ness. scr_lib.c's read
+ * entries set is_buffer only under SCR_FS_BUFFER_BRAND, so this conjunction
+ * selects that variant; a program that reads bytes without observing them
+ * keeps the default object. */
+function fsBufferBrandScan(mod: IrModule): RuleScan {
+  let reads = false;
+  let observes = false;
+  let holdsBytes: ((t: IrType) => boolean) | undefined;
+  return {
+    expr: (node) => {
+      if (reads && observes) return;
+      if (node.kind === "libCall" && FS_READ_BYTES_FNS.has(node.fn)) {
+        reads = true;
+        return;
+      }
+      if (observes) return;
+      switch (node.kind) {
+        case "dynFrom":
+          observes = (holdsBytes ??= bytesCarryingDecls(mod))(node.value.type);
+          return;
+        case "dynCheck":
+          if (node.type.kind === "func") {
+            observes = (holdsBytes ??= bytesCarryingDecls(mod))(node.type);
+          }
+          return;
+        case "bytesIntrinsic":
+          observes = FS_BUFFER_SEARCH_METHODS.has(node.method);
+          return;
+        case "libCall":
+          observes = node.fn === "buffer.isBranded" || node.fn === "insp.bytes";
+          return;
+        default:
+          return;
+      }
+    },
+    result: () => reads && observes,
+  };
+}
+
 /** One rule per runtime feature, sorted by name. A new feature is an
  * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
  * and its early exit derive from this table. The lists above keep one
@@ -850,12 +1005,18 @@ const RUNTIME_FEATURE_RULES = {
    * queueMicrotask scheduling goes through the runtime's *_als entry
    * points, which carry the active stores into each callback. */
   asyncContext: rule({ fns: [...ASYNC_CONTEXT_LIB_FNS] }),
-  /** scr_wasm.c converts i64 values through BigInt. */
+  /** scr_wasm.c converts i64 values through BigInt, and BigIntStats reads
+   * produce bigint values. */
   bigint: rule({
     fns: ["process.hrtimeValue"],
-    prefixes: ["bigint.", "wasm."],
+    prefixes: ["bigint.", "wasm.", "bigstats."],
     types: ["bigint"],
   }),
+  /** BigIntStats member reads (`statSync(p, { bigint: true })` members) link
+   * scr_stats_bigint.c. The bigint feature is broader than this unit: every
+   * bigint value and wasm conversion turns it on, so gating the unit on it
+   * would link the getters into programs that never name a stat member. */
+  bigstats: rule({ prefixes: ["bigstats."] }),
   childProcess: rule({
     fns: [...CHILD_PROCESS_LIB_FNS],
     prefixes: CHILD_PROCESS_LIB_PREFIXES,
@@ -957,6 +1118,16 @@ const RUNTIME_FEATURE_RULES = {
    * half (scr_dyn_builtin_stream.c): native stream state for constructor
    * functions, over the stream unit. */
   dynBuiltinStream: rule({ fns: ["dyn.builtinStreamClass"] }),
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (scr_dyn_stdlib_prototype.c): `Date.prototype`. */
+  stdlibPrototypeValue: rule({ fns: ["dyn.stdlibPrototype"] }),
+  /** Array.prototype's generic algorithms over array-like receivers
+   * (scr_dyn_array_like.c), which delegates every other name to the
+   * dyn-invoke unit's array dispatch. */
+  arrayLikeDispatch: rule({ fns: ["dyn.arrayLikeProtoCall"] }),
+  /** Number.prototype and Boolean.prototype as values
+   * (scr_dyn_builtin_prototype.c). */
+  builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     fns: [
@@ -969,6 +1140,11 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.class",
       "webstream.instanceOf",
       "webstream.install",
+      // scr_js_wrapper.c answers other values' tags through
+      // scr_dyn_object_tag_of, and its prototype methods call scr_dyn_invoke.
+      "wrapper.objectTag",
+      "wrapper.new",
+      "wrapper.toObject",
     ],
     // Constant-key reads of Object.prototype member names answer the
     // inherited member through scr_dyn_invoke.c.
@@ -1000,6 +1176,9 @@ const RUNTIME_FEATURE_RULES = {
   typeOrigins: rule({ initial: (mod) => (mod.declOrigins?.length ?? 0) > 0 }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically
+   * (scr_dyn_integrity.c, a unit of its own so scr_json.c keeps its layout). */
+  dynIntegrityQueries: rule({ fns: ["dyn.isExtensibleQuery", "dyn.isSealedQuery"] }),
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
@@ -1020,6 +1199,12 @@ const RUNTIME_FEATURE_RULES = {
       "buffer.installValue",
       "buffer.staticValue",
       "buffer.prototypeMember",
+      "dyn.validateString",
+      "dyn.validateStrings",
+      "path.resolveValue",
+      "path.parseValue",
+      "path.formatValue",
+      "path.toNamespacedValue",
     ],
   }),
   /** The stream unit emits through the emitter unit, also when the
@@ -1068,7 +1253,14 @@ const RUNTIME_FEATURE_RULES = {
   eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
+  /** A typed fs read whose bytes value the program can observe as a Buffer:
+   * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
+   * brand keep the default object. */
+  fsBufferBrand: rule({ scan: fsBufferBrandScan }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
+  /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
+   * half of the watching surface, gated on its own unit. */
+  fsWatchFile: rule({ fns: ["fs.watchFile", "fs.unwatchFile"] }),
   /** A socket 'lookup' listener: the C main installs the net unit's
    * lookup records (scr_net_lookup_install). */
   netLookup: rule({ fns: ["net.sockOnLookup"] }),
@@ -1082,6 +1274,12 @@ const RUNTIME_FEATURE_RULES = {
     libCall: (node) => node.fn.startsWith("http2.") && !HTTP2_LEGACY_FNS.has(node.fn),
     types: ["http2Session", "http2Stream"],
   }),
+  /** Intl over ICU: scr_intl.c plus the ICU archive and the data
+   * file that ships beside the executable. The prefix is `icu.` because the
+   * `intl.` libCalls are the engine-free fast paths — the embedded en-US
+   * number format and the table-driven grapheme segmenter — which must keep
+   * linking no ICU code. */
+  icu: rule({ prefixes: ["icu."] }),
   /** scr_test.c renders thrown strings with the inspect unit's string
    * formatting; scr_util_callable.c wraps the inspect unit; readline's
    * terminal unit prints completion errors through it when there is a
@@ -1091,8 +1289,12 @@ const RUNTIME_FEATURE_RULES = {
       "global.native",
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
+      // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
+      "strdec.encodingValue",
       "webstream.install",
       "util.styleText",
+      // ERR_UNHANDLED_ERROR quotes util.inspect of a non-Error payload.
+      "emitter.emitErrorValue",
       "crypto.cipherNew",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
@@ -1160,6 +1362,9 @@ const RUNTIME_FEATURE_RULES = {
       ...UTIL_CALLABLE_LIB_FNS,
       "rl.terminal",
       "str.localeCase",
+      // win32.relative compares with String.prototype.toLowerCase's
+      // Unicode case mapping.
+      "path.win32Relative",
     ],
     prefixes: URL_PREFIXES,
     expr: (node, _tables) =>
@@ -1185,6 +1390,18 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "dynInvoke" && STDIO_EXTENDED_NAMES.has(node.method)) ||
       (node.kind === "strLit" && STDIO_EXTENDED_NAMES.has(node.value)),
   }),
+  /** A write completion callback that takes the error argument lowers
+   * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
+   * publishes the error the adapter delivers. */
+  streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
+  /** The program reaches the process output streams' write slot — the
+   * write method as a value (process.stdioSlot), its replacement, a patched
+   * program's typed writes, or a run-time-typed chunk
+   * (process.stdioWriteDyn): the SCR_STDIO_WRITE_SLOT build of the events
+   * unit carries the shared write body, the dynamic-chunk entry point and
+   * Node's anonymous write function. Every other program links the default
+   * object, byte for byte. */
+  stdioWriteSlot: rule({ fns: ["process.stdioSlot", "process.stdioWriteDyn"] }),
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
@@ -1206,11 +1423,19 @@ const RUNTIME_FEATURE_RULES = {
   utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
+  /** A record literal asserted to a wider record type answers a partial
+   * record view (record-views.ts): the SIZE_MAX sentinel and its trap live in
+   * the SCR_RECORD_VIEW_PARTIAL build of scr_json.c. */
+  recordViewPartial: rule({
+    expr: (node) => node.kind === "dynCheck" && node.partialView === true,
+  }),
   /** Module namespace objects as checked-dynamic values
    * (scr_module_namespace.c). */
   moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
   moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
+  /** Primitive wrapper objects (scr_js_wrapper.c). */
+  primitiveWrapper: rule({ prefixes: ["wrapper."] }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
@@ -1244,6 +1469,33 @@ const RUNTIME_FEATURE_RULES = {
       "tls.sockGetCertificate",
     ],
   }),
+  /** writeFile's `flag` disposition ("w" / "wx") and copyFile's mode
+   * argument: scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c.
+   * Programs that never pass either keep both units' default objects. */
+  fsFlags: rule({
+    fns: [
+      "fs.copyFileFlagsSync",
+      "fs.writeFileFlagsSync",
+      "fsp.copyFileFlags",
+      "fsp.writeFileFlags",
+    ],
+  }),
+  /** string_decoder's checked-dynamic chunk forms (a stream "data" payload):
+   * scr_bytes_strdec_dyn.c. */
+  strdecDyn: rule({ fns: ["strdec.nextDyn", "strdec.writeDyn"] }),
+  /** The process and stream event registries' extras — prependListener for
+   * signals, 'exit' and uncaught exceptions, stdin.isRaw, and server.off:
+   * the SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and
+   * the SCR_NET_SERVER_OFF build of scr_net.c. */
+  processExtras: rule({
+    fns: [
+      "net.serverOff",
+      "process.prependExit",
+      "process.prependSignal",
+      "process.prependUncaughtException",
+      "process.stdinIsRaw",
+    ],
+  }),
   zlib: rule({ prefixes: ["zlib."] }),
   /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
    * the program uses Brotli (scr_brotli.c). */
@@ -1264,6 +1516,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     assert: false,
     asyncContext: false,
     bigint: false,
+    bigstats: false,
     childProcess: false,
     cipher: false,
     copying: false,
@@ -1275,7 +1528,10 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynAsync: false,
     dynBuiltinClass: false,
     dynBuiltinStream: false,
+    stdlibPrototypeValue: false,
     dynInvoke: false,
+    arrayLikeDispatch: false,
+    builtinPrototypeValue: false,
     dynTier: false,
     ecdh: false,
     x509: false,
@@ -1285,9 +1541,13 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
+    fsBufferBrand: false,
+    fsFlags: false,
     fsWatch: false,
+    fsWatchFile: false,
     http2: false,
     http: false,
+    icu: false,
     inspect: false,
     legacyTextDecoder: false,
     mime: false,
@@ -1304,20 +1564,26 @@ function noRuntimeFeatures(): RuntimeFeatures {
     pki: false,
     ed25519: false,
     processEvents: false,
+    processExtras: false,
     qs: false,
     regex: false,
     searchParams: false,
     urlIdna: false,
     stdioExtended: false,
+    stdioWriteSlot: false,
+    streamWriteErrors: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,
+    primitiveWrapper: false,
     stream: false,
+    strdecDyn: false,
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
+    dynIntegrityQueries: false,
     dynBuffer: false,
     builtinValues: false,
     computedRequire: false,
@@ -1326,6 +1592,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     tlsCa: false,
     utilPromisify: false,
     warningReplace: false,
+    recordViewPartial: false,
     wasm: false,
     webcrypto: false,
     zlib: false,
@@ -1369,7 +1636,7 @@ function scanRuntimeFeatures(
   for (const name of RUNTIME_FEATURE_NAMES) {
     const { initial, scan } = ruleOf(name);
     if (initial && initial(mod)) features[name] = true;
-    if (scan) scans.push({ name, scan: scan() });
+    if (scan) scans.push({ name, scan: scan(mod) });
   }
   const keepGoing = (): boolean => stopAt === undefined || !features[stopAt];
   let tables: TypeTables | undefined;
@@ -1417,6 +1684,13 @@ function scanRuntimeFeatures(
     const sites = new JsIcSites(mod);
     features.dynTier = mod.functions.some((fn) => fn.tier === "dynamic" && hasJsIcSite(fn, sites));
   }
+  // A jsval parameter or result (ir/jsval.ts) is retained and released
+  // through the tier's word reference counting, with or without a js.*
+  // operation in the body.
+  if (!features.dynTier)
+    features.dynTier = mod.functions.some(
+      (fn) => fn.returnType.kind === "jsval" || fn.params.some((p) => p.type.kind === "jsval"),
+    );
   return features;
 }
 
@@ -1629,6 +1903,15 @@ export function moduleUsesParseArgs(mod: IrModule): boolean {
  * link line. Same generic-walk shape as moduleUsesZlib. */
 export function moduleUsesFsWatch(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "fsWatch").fsWatch;
+}
+
+/** True when the module contains an fs.watchFile/fs.unwatchFile libCall —
+ * the link switch that pulls scr_watch_file.c into the binary and has the
+ * emitted main call scr_watch_file_install (the moduleUsesFsWatch
+ * precedent, one unit of its own). Programs that never poll pay zero bytes
+ * and keep their exact link line. */
+export function moduleUsesFsWatchFile(mod: IrModule): boolean {
+  return scanRuntimeFeatures(mod, "fsWatchFile").fsWatchFile;
 }
 
 /** True when the module contains any test.* libCall or a testCtx handle
