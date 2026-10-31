@@ -90,6 +90,15 @@ static void scr_json_oom(void) {
 static SCR_TL ScrDyn *scr_iterator_symbol;
 static SCR_TL ScrDyn *scr_async_iterator_symbol;
 static SCR_TL ScrDyn *scr_to_primitive_symbol;
+static ScrDyn *scr_dyn_exotic_to_primitive(const ScrDyn *value, const char *hint, bool *handled);
+/* ToNumber's Symbol.toPrimitive step, set by
+ * scr_dyn_to_primitive_number_install: programs that never read
+ * Symbol.toPrimitive do not link the step or the ToString its TypeError
+ * messages use. External, so the optimizer does not turn the call through
+ * it into a direct call. */
+ScrDyn *(*scr_to_primitive_number_fn)(const ScrDyn *value, const char *hint, bool *handled) = NULL;
+
+void scr_dyn_to_primitive_number_install(void) { scr_to_primitive_number_fn = scr_dyn_exotic_to_primitive; }
 static bool scr_dyn_generator(const ScrDyn *value) {
   if (!value || value->kind != SCR_DYN_TYPED_REF) return false;
   /* Array keys also start with 'a': the second byte sets them apart before
@@ -188,6 +197,8 @@ static void scr_inspect_custom_symbol_cleanup(void) {
   scr_dyn_release(scr_inspect_custom_symbol);
   scr_inspect_custom_symbol = NULL;
 }
+
+ScrSym *(*scr_sym_for_fn)(ScrStr *key) = NULL;
 
 void scr_dyn_install_inspect_custom_symbol(ScrDyn *key) {
   if (scr_inspect_custom_symbol) return;
@@ -6034,6 +6045,7 @@ SCR_TL ScrDyn *(*scr_dyn_builtin_static_fn)(const ScrDyn *fn, const char *key, s
 SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table) = NULL;
 SCR_TL const char *(*scr_dyn_builtin_owner_fn)(const ScrDyn *fn) = NULL;
 ScrDyn *(*scr_bytes_buffer_constructor_fn)(void) = NULL;
+ScrDyn *(*scr_bytes_buffer_member_fn)(const ScrDyn *value, const ScrStr *key) = NULL;
 
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
   if (callee->kind == SCR_DYN_FUNC && scr_array_ctor && callee->v.fn.clo == scr_array_ctor->v.fn.clo)
@@ -6649,6 +6661,17 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
       index = index * 10 + (size_t)(key->data[i] - '0');
     }
     if (digits && index < bytes->len) return scr_dyn_new_num(scr_bytes_get(bytes, (double)index));
+  }
+  /* Buffer.prototype's parent and offset getters: the instance's
+   * ArrayBuffer and byteOffset. */
+  if (value->buffer && key->len == 6 && memcmp(key->data, "parent", 6) == 0) return scr_array_buffer_from_bytes(bytes);
+  if (value->buffer && key->len == 6 && memcmp(key->data, "offset", 6) == 0)
+    return scr_dyn_new_num(scr_bytes_byte_offset(bytes));
+  /* A Buffer's own Buffer.prototype methods come before the
+   * %TypedArray%.prototype ones they override (slice, fill, indexOf, ...). */
+  if (value->buffer && scr_bytes_buffer_member_fn) {
+    ScrDyn *member = scr_bytes_buffer_member_fn(value, key);
+    if (member) return member;
   }
   /* %TypedArray%.prototype methods, with their lengths. */
   static const struct { const char *name; size_t arity; } methods[] = {
@@ -9563,8 +9586,19 @@ ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool opti
     if (member || scr_exc_pending()) return member;
   }
   ScrDyn *receiver = scr_dyn_symbol_receiver(value);
-  if (!receiver) return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
-  ScrDynEntry *entry = scr_dyn_symbol_entry(receiver, key, false);
+  if (!receiver && scr_exc_pending()) return NULL;
+  ScrDynEntry *entry = receiver ? scr_dyn_symbol_entry(receiver, key, false) : NULL;
+  /* A Buffer inherits Buffer.prototype[Symbol(nodejs.util.inspect.custom)],
+   * its inspect function, unless an own symbol property shadows it. */
+  if (!entry && value->kind == SCR_DYN_BYTES && value->buffer && scr_bytes_buffer_member_fn &&
+      scr_inspect_custom_symbol && key->v.symbol.value == scr_inspect_custom_symbol->v.symbol.value) {
+    ScrStr *name = scr_str_new("inspect", 7);
+    ScrDyn *inspect = scr_bytes_buffer_member_fn(value, name);
+    scr_str_release(name);
+    scr_dyn_release(receiver);
+    return inspect ? inspect : scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (!receiver) return scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *out;
   if (!entry) out = scr_dyn_retain(scr_dyn_undefined());
   else if (!entry->accessor) out = scr_dyn_retain(entry->value);
@@ -11867,60 +11901,79 @@ ScrStr *scr_util_to_usv_string(const ScrDyn *input) {
   return usv;
 }
 
+/* An object's Symbol.toPrimitive member called with `hint` ("string" or
+ * "number"), once the program has read the symbol: the primitive (+1), or
+ * NULL with *handled false when the object has no such member, or NULL with
+ * the exception pending (a member that is not a function, a throw, or an
+ * object result). */
+static ScrDyn *scr_dyn_exotic_to_primitive(const ScrDyn *value, const char *hint, bool *handled) {
+  *handled = false;
+  if (!scr_to_primitive_symbol || !scr_iterator_object(value)) return NULL;
+  ScrDyn *method = scr_dyn_reflect_get((ScrDyn *)value, scr_to_primitive_symbol, (ScrDyn *)value);
+  if (!method) {
+    *handled = true;
+    return NULL;
+  }
+  if (method->kind == SCR_DYN_UNDEF || method->kind == SCR_DYN_NULL) {
+    scr_dyn_release(method);
+    return NULL;
+  }
+  *handled = true;
+  if (!scr_dyn_is_callable(method)) {
+    ScrJsonBuf buffer;
+    scr_jb_init(&buffer);
+    if (scr_iterator_object(method)) scr_jb_puts(&buffer, "object");
+    else {
+      ScrStr *type = scr_dyn_typeof(method);
+      scr_jb_put_str(&buffer, type);
+      scr_str_release(type);
+      if (method->kind != SCR_DYN_SYMBOL && method->kind != SCR_DYN_BIGINT) scr_jb_puts(&buffer, " ");
+      if (method->kind == SCR_DYN_STR) {
+        scr_jb_puts(&buffer, "\"");
+        scr_jb_put_str(&buffer, method->v.str);
+        scr_jb_puts(&buffer, "\"");
+      }
+      else if (method->kind != SCR_DYN_SYMBOL && method->kind != SCR_DYN_BIGINT) {
+        ScrStr *text = scr_dyn_string_coerce(method);
+        scr_jb_put_str(&buffer, text);
+        scr_str_release(text);
+      }
+    }
+    scr_jb_puts(&buffer, " is not a function");
+    ScrStr *message = scr_jb_finish(&buffer);
+    scr_throw_error_msg(SCR_ERR_TYPE, message->data, message->len);
+    scr_str_release(message);
+    scr_dyn_release(method);
+    return NULL;
+  }
+  ScrStr *hint_text = scr_str_new(hint, strlen(hint));
+  ScrDyn *argument = scr_dyn_new_str(hint_text);
+  scr_str_release(hint_text);
+  scr_dyn_this_push_dyn(value);
+  ScrDyn *primitive = scr_dyn_call(method, &argument, 1, "Symbol.toPrimitive");
+  scr_dyn_this_pop();
+  scr_dyn_release(argument);
+  scr_dyn_release(method);
+  if (!primitive) return NULL;
+  if (scr_dyn_to_primitive_result_is_object(primitive)) {
+    static const char message[] = "Cannot convert object to primitive value";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    scr_dyn_release(primitive);
+    return NULL;
+  }
+  return primitive;
+}
+
 /* ToString, preserving the object protocol. */
 ScrStr *scr_util_to_string(const ScrDyn *input) {
   const ScrDyn *value = input ? input : scr_dyn_undefined();
-  if (scr_to_primitive_symbol && scr_iterator_object(value)) {
-    ScrDyn *method = scr_dyn_reflect_get((ScrDyn *)value, scr_to_primitive_symbol, (ScrDyn *)value);
-    if (!method) return NULL;
-    if (method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
-      if (!scr_dyn_is_callable(method)) {
-        ScrJsonBuf buffer;
-        scr_jb_init(&buffer);
-        if (scr_iterator_object(method)) scr_jb_puts(&buffer, "object");
-        else {
-          ScrStr *type = scr_dyn_typeof(method);
-          scr_jb_put_str(&buffer, type);
-          scr_str_release(type);
-          if (method->kind != SCR_DYN_SYMBOL && method->kind != SCR_DYN_BIGINT) scr_jb_puts(&buffer, " ");
-          if (method->kind == SCR_DYN_STR) {
-            scr_jb_puts(&buffer, "\"");
-            scr_jb_put_str(&buffer, method->v.str);
-            scr_jb_puts(&buffer, "\"");
-          }
-          else if (method->kind != SCR_DYN_SYMBOL && method->kind != SCR_DYN_BIGINT) {
-            ScrStr *text = scr_dyn_string_coerce(method);
-            scr_jb_put_str(&buffer, text);
-            scr_str_release(text);
-          }
-        }
-        scr_jb_puts(&buffer, " is not a function");
-        ScrStr *message = scr_jb_finish(&buffer);
-        scr_throw_error_msg(SCR_ERR_TYPE, message->data, message->len);
-        scr_str_release(message);
-        scr_dyn_release(method);
-        return NULL;
-      }
-      ScrStr *hint = scr_str_new("string", 6);
-      ScrDyn *argument = scr_dyn_new_str(hint);
-      scr_str_release(hint);
-      scr_dyn_this_push_dyn(value);
-      ScrDyn *primitive = scr_dyn_call(method, &argument, 1, "Symbol.toPrimitive");
-      scr_dyn_this_pop();
-      scr_dyn_release(argument);
-      scr_dyn_release(method);
-      if (!primitive) return NULL;
-      if (scr_dyn_to_primitive_result_is_object(primitive)) {
-        static const char message[] = "Cannot convert object to primitive value";
-        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-        scr_dyn_release(primitive);
-        return NULL;
-      }
-      ScrStr *text = scr_dyn_string_coerce(primitive);
-      scr_dyn_release(primitive);
-      return text;
-    }
-    scr_dyn_release(method);
+  bool handled;
+  ScrDyn *primitive = scr_dyn_exotic_to_primitive(value, "string", &handled);
+  if (handled) {
+    if (!primitive) return NULL;
+    ScrStr *text = scr_dyn_string_coerce(primitive);
+    scr_dyn_release(primitive);
+    return text;
   }
   return scr_dyn_string_coerce_js(value);
 }
@@ -11974,6 +12027,17 @@ bool scr_dyn_number_coerce_js(const ScrDyn *d, double *out) {
     *out = NAN;
     return true;
   case SCR_DYN_OBJ: {
+    /* An own or inherited Symbol.toPrimitive runs first, with the number
+     * hint. */
+    bool handled = false;
+    ScrDyn *primitive =
+        scr_to_primitive_number_fn ? scr_to_primitive_number_fn(d, "number", &handled) : NULL;
+    if (handled) {
+      if (!primitive) return false;
+      bool ok = scr_dyn_number_coerce_js(primitive, out);
+      scr_dyn_release(primitive);
+      return ok;
+    }
     static const char *const hint[2] = { "valueOf", "toString" };
     for (int i = 0; i < 2; i++) {
       const ScrDyn *owner = scr_dyn_property_owner(d, hint[i], strlen(hint[i]));
@@ -18206,8 +18270,9 @@ ScrError *scr_domex_clone(ScrError *e, const ScrDyn *options) {
 /* ── atob/btoa — the WHATWG base64 globals (Node globals since v16) ───
  * They live HERE (not scr_string.c) because the argument is a dyn value:
  * WebIDL ToString runs over the dyn kind (Node's atob(null) decodes the
- * string "null"), and the string unit must stay linkable without the
- * dyn. atob checks its input as Node's lib/buffer.js does (an invalid
+ * string "null", an object converts through Symbol.toPrimitive, toString
+ * or valueOf, and a symbol throws the TypeError), and the string unit must stay linkable
+ * without the dyn. atob checks its input as Node's lib/buffer.js does (an invalid
  * character or a misplaced '=' is "Invalid character", a length the
  * forgiving-base64 rules refuse "not correctly encoded"), then decodes
  * with leftover bits discarded to the latin1 code points as a UTF-8 string;
@@ -18225,7 +18290,8 @@ static int scr_b64_val(unsigned char c) {
 }
 
 ScrStr *scr_atob(const ScrDyn *data) {
-  ScrStr *s = scr_dyn_string_coerce(data);
+  ScrStr *s = scr_util_to_string(data);
+  if (!s) return NULL;
   /* Node's checks (lib/buffer.js): only ASCII whitespace and the base64
    * alphabet with '=' are allowed, '=' only at the end and at most twice;
    * the count of the other characters decides the rest. One pass checks
@@ -18295,7 +18361,8 @@ ScrStr *scr_atob(const ScrDyn *data) {
 ScrStr *scr_btoa(const ScrDyn *data) {
   static const char alphabet[] =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  ScrStr *s = scr_dyn_string_coerce(data);
+  ScrStr *s = scr_util_to_string(data);
+  if (!s) return NULL;
   /* UTF-8 → code points, each must fit latin1 (one byte). The runtime's
    * strings are canonical WTF-8, so only C2/C3 leads can stay in range;
    * every other lead byte names a code unit over U+00FF. */

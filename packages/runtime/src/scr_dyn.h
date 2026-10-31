@@ -1237,6 +1237,16 @@ void scr_dyn_install_iterator_symbol(ScrDyn *key);
  * when the registry creates it; NULL (borrowed) until then. */
 void scr_dyn_install_inspect_custom_symbol(ScrDyn *key);
 ScrDyn *scr_dyn_inspect_custom_symbol(void);
+/* Symbol.for(key) once scr_sym_for_install has run, NULL otherwise: units
+ * outside the symbol unit create registered symbols through it. The program
+ * calls scr_sym_for_install before its entry when it reads Buffer.prototype
+ * as a value (RuntimeFeatures bufferPrototypeObject). Borrows key; +1. */
+extern ScrSym *(*scr_sym_for_fn)(ScrStr *key);
+void scr_sym_for_install(void);
+/* Installs ToNumber's Symbol.toPrimitive step (scr_dyn_number_coerce_js).
+ * The program calls it before its entry when it reads Symbol.toPrimitive
+ * (RuntimeFeatures toPrimitiveNumber). */
+void scr_dyn_to_primitive_number_install(void);
 void scr_dyn_install_has_instance_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_dispose_symbol(ScrDyn *key);
@@ -1882,6 +1892,7 @@ ScrDyn *scr_dyn_invoke_buffer_fill(ScrDyn *recv, ScrDyn *callee, const char *met
 ScrDyn *scr_dyn_invoke_buffer_to_string(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
+ScrDyn *scr_dyn_invoke_buffer_wide(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
 /* A %TypedArray%.prototype method called on a checked typed array (not a
  * DataView): its answer (+1, or NULL with the exception pending), with

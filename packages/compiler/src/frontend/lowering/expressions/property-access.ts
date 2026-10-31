@@ -184,7 +184,7 @@ import {
 } from "../builtins/module-resolution.js";
 import { builtinPrototypeMethod, lowerCheckedPredicateValue } from "../lower-builtin-values.js";
 import { constructorStaticValue, objectFreezeValue } from "../builtin-statics.js";
-import { lowerBufferPrototypeMember } from "../containers/bytes.js";
+import { lowerBufferPrototypeMember, lowerBufferPrototypeObject } from "../containers/bytes.js";
 import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "../builtins/filesystem.js";
 import { arrayValueRead, arrayValueType } from "../array-values.js";
@@ -380,7 +380,8 @@ export function lowerPropertyAccessExpr(
     };
   }
   {
-    const member = lowerBufferPrototypeMember(lowerer, expr);
+    const member =
+      lowerBufferPrototypeMember(lowerer, expr) ?? lowerBufferPrototypeObject(lowerer, expr);
     if (member) return member;
   }
   // A dgram socket's method read as a value in JavaScript (`emit:
@@ -1682,6 +1683,24 @@ export function lowerPropertyAccessExpr(
   ) {
     return afterReceiver(recvLowered, dynUndefinedExpr(loc), loc);
   }
+  // Buffer.prototype's parent and offset getters, which @types/node does not
+  // declare (so only JavaScript reads them): the box answers a Buffer's
+  // ArrayBuffer and byteOffset, and undefined for a Uint8Array, by the
+  // runtime flag that tells the two apart.
+  if (
+    recvLowered.type.kind === "bytes" &&
+    recvLowered.type.elem === "u8" &&
+    (expr.name.text === "parent" || expr.name.text === "offset") &&
+    !declaredMemberOf(lowerer, expr.expression, expr.name.text)
+  ) {
+    return {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(recvLowered, DYN),
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
+  }
   // A typed array under a checker `any` (a JS binding its own initializer's
   // inference refers to: hono's etag digest `nextChunk`) reads through its
   // box, as the method-call twin dispatches. The box shares the native
@@ -2789,6 +2808,22 @@ export function lowerIntrinsicProperty(
       const receiver =
         expected?.kind === "bytes" ? strictReceiver(expected) : lowerer.lowerExpr(expr.expression);
       return { kind: "bytesIntrinsic", method: "buffer", receiver, args: [], type: DYN, loc };
+    }
+    // A method read as a value in JavaScript (`buf.indexOf ===
+    // Buffer.prototype.indexOf`, `const write = buf.writeUInt8`): the box
+    // answers the function Node's prototype holds, which runs on the
+    // receiver it is called with.
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      const expected = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+      const receiver =
+        expected?.kind === "bytes" ? strictReceiver(expected) : lowerer.lowerExpr(expr.expression);
+      return {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(receiver, DYN),
+        key: { kind: "strLit", value: name, type: STRING, loc },
+        type: DYN,
+        loc,
+      };
     }
     if (name === "slice" || name === "subarray" || name === "set" || name === "toString") {
       lowerer.unsupported(
