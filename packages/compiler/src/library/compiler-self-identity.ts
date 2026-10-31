@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,6 +26,11 @@ const INSTALL_RECORD_NAME = "install-digest.json";
 
 interface InstallDigestRecord {
   version: 1;
+  /** The install this digest describes. A package copied elsewhere carries the
+   * record with it, and its dependencies name the original's files, which are
+   * still present and still match; only a matching root says the record is
+   * about this install. */
+  root: string;
   digest: string;
   dependencies: CompilerImplementationDependency[];
 }
@@ -66,8 +71,9 @@ async function readInstallDigest(root: string): Promise<InstallDigestRecord | nu
       await readFile(installRecordPath(root), "utf8"),
     ) as Partial<InstallDigestRecord>;
     if (parsed.version !== 1 || typeof parsed.digest !== "string") return null;
-    if (!Array.isArray(parsed.dependencies)) return null;
-    return { version: 1, digest: parsed.digest, dependencies: parsed.dependencies };
+    if (parsed.root !== root) return null;
+    if (!Array.isArray(parsed.dependencies) || parsed.dependencies.length === 0) return null;
+    return { version: 1, root, digest: parsed.digest, dependencies: parsed.dependencies };
   } catch {
     return null;
   }
@@ -90,7 +96,7 @@ async function writeInstallDigest(
   digest: string,
   dependencies: CompilerImplementationDependency[],
 ): Promise<void> {
-  const record: InstallDigestRecord = { version: 1, digest, dependencies };
+  const record: InstallDigestRecord = { version: 1, root, digest, dependencies };
   try {
     await writeFile(installRecordPath(root), `${JSON.stringify(record)}\n`, { mode: 0o600 });
   } catch {
@@ -108,7 +114,11 @@ export async function compilerImplementationIdentity(
   captureDependencies = true,
   implementationRoot = compilerImplementationRoot(),
 ): Promise<CompilerImplementationIdentity> {
-  const recorded = await readInstallDigest(implementationRoot);
+  // An installed package path can be a symlink to the package directory, so
+  // the scan starts at what the link names: the walk classifies a directory
+  // from its own type, and a symlink is not one of the kinds it records.
+  const root = await realpath(implementationRoot).catch(() => implementationRoot);
+  const recorded = await readInstallDigest(root);
   if (
     recorded !== null &&
     (await compilerImplementationDependenciesStillMatch(recorded.dependencies))
@@ -130,11 +140,7 @@ export async function compilerImplementationIdentity(
     for (const entry of children) {
       // The record directory is outside the identity; it is created before
       // the scan so the root directory's captured metadata stays stable.
-      if (
-        directory === implementationRoot &&
-        entry.name === INSTALL_RECORD_DIRECTORY &&
-        entry.isDirectory()
-      )
+      if (directory === root && entry.name === INSTALL_RECORD_DIRECTORY && entry.isDirectory())
         continue;
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
@@ -144,8 +150,8 @@ export async function compilerImplementationIdentity(
       }
     }
   };
-  await ensureInstallRecordDirectory(implementationRoot);
-  await walk(implementationRoot);
+  await ensureInstallRecordDirectory(root);
+  await walk(root);
   // Keep the v1 digest byte-identical: dependency metadata augments replay
   // validation without invalidating every existing library/executable entry.
   // Read bounded batches concurrently, then hash in the original sorted DFS
@@ -165,16 +171,12 @@ export async function compilerImplementationIdentity(
     for (const entry of batch) {
       if (entry.info !== null) dependencies.push(entry.info);
       if (entry.bytes !== null) {
-        hash
-          .update(relative(implementationRoot, entry.path))
-          .update("\0")
-          .update(entry.bytes)
-          .update("\0");
+        hash.update(relative(root, entry.path)).update("\0").update(entry.bytes).update("\0");
       }
     }
   }
   const digest = hash.digest("hex");
-  await writeInstallDigest(implementationRoot, digest, dependencies);
+  await writeInstallDigest(root, digest, dependencies);
   return {
     digest,
     dependencies: captureDependencies ? dependencies : [],

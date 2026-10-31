@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import {
+  cp,
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -25,8 +27,10 @@ afterEach(async () => {
 });
 
 async function fixture(): Promise<string> {
-  const root = await mkdtemp(
-    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-self-identity-"),
+  // The identity names the directory it scanned, so fixtures are canonical:
+  // a temporary directory can sit behind a symlink (as /tmp does on macOS).
+  const root = await realpath(
+    await mkdtemp(join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-self-identity-")),
   );
   scratch.push(root);
   return root;
@@ -175,3 +179,42 @@ test("an install that cannot store its digest still hashes its files", async () 
     "compiler.js",
   ]);
 });
+
+test("a copied installation does not reuse the original's record", async () => {
+  const root = await fixture();
+  const holder = await fixture();
+  await writeFile(join(root, "compiler.js"), "one");
+  const original = await compilerImplementationIdentity(true, root);
+  // The copy carries the original's record, whose dependencies name the
+  // original's files. Those are still present and still match there.
+  const copied = join(holder, "package");
+  await cp(root, copied, { recursive: true });
+  await writeFile(join(copied, "compiler.js"), "two");
+  const after = await compilerImplementationIdentity(true, copied);
+  expect(after.digest).not.toBe(original.digest);
+  expect(await recordedDigest(copied)).toBe(after.digest);
+  const record = JSON.parse(
+    await readFile(join(copied, ".scriptc", "install-digest.json"), "utf8"),
+  ) as { root: string };
+  expect(record.root).toBe(await realpath(copied));
+});
+
+test.skipIf(process.platform === "win32")(
+  "a symlinked package path fingerprints the package it names",
+  async () => {
+    const root = await fixture();
+    await writeFile(join(root, "compiler.js"), "one");
+    const link = `${root}-link`;
+    scratch.push(link);
+    await symlink(root, link);
+    // The link is not one of the kinds the walk records, so a cache miss has
+    // to scan the directory it names instead of treating it as a file.
+    const linked = await compilerImplementationIdentity(true, link);
+    expect(linked.dependencies.map((item) => relative(root, item.path))).toEqual([
+      "",
+      "compiler.js",
+    ]);
+    expect((await compilerImplementationIdentity(true, root)).digest).toBe(linked.digest);
+    expect(await recordedDigest(link)).toBe(linked.digest);
+  },
+);
