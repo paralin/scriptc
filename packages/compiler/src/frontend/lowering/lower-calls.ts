@@ -12292,13 +12292,44 @@ function checkedDynamicOperand(expr: IrExpr): IrExpr | null {
 }
 
 /** A reference whose evaluation has no effects: an identifier, `this`, or a
- * property chain over one. */
-function isPureReference(node: ts.Expression): boolean {
+ * property chain of stored data fields over one. A property read that can
+ * run an accessor, or that checks a deferred-initialization slot, has
+ * effects, so a chain through one is not pure. */
+function isPureReference(lowerer: Lowerer, node: ts.Expression): boolean {
   if (ts.isIdentifier(node) || node.kind === ts.SyntaxKind.ThisKeyword) return true;
+  if (!ts.isPropertyAccessExpression(node) || node.questionDotToken) return false;
+  return isPureReference(lowerer, node.expression) && isStoredFieldRead(lowerer, node);
+}
+
+/** `node` reads a stored data field: its receiver is a class instance whose
+ * chain declares no method, accessor or deferred-initialization slot under
+ * the name, or a record holding the field, so the read runs no program code
+ * and cannot throw. */
+function isStoredFieldRead(lowerer: Lowerer, node: ts.PropertyAccessExpression): boolean {
+  const name = node.name.text;
+  let t: IrType | null;
+  try {
+    t = lowerer.mapTypeOf(lowerer.typeOf(node.expression));
+  } catch {
+    return false;
+  }
+  if (t?.kind === "record") {
+    const shape = lowerer.shapes.get(t.shapeId);
+    return (
+      shape !== undefined &&
+      !shapeHasAccessorSlots(shape) &&
+      shape.fields.some((field) => field.name === name)
+    );
+  }
+  if (t?.kind !== "object") return false;
+  const info = lowerer.classes.get(t.className);
+  if (info === undefined) return false;
   return (
-    ts.isPropertyAccessExpression(node) &&
-    !node.questionDotToken &&
-    isPureReference(node.expression)
+    info.fields.has(name) &&
+    !info.deferredInitFields?.has(name) &&
+    lowerer.findMethodOn(info, name) === null &&
+    lowerer.findMethodOn(info, `get:${name}`) === null &&
+    lowerer.findMethodOn(info, `set:${name}`) === null
   );
 }
 
@@ -12340,13 +12371,16 @@ function lowerEmitterMethodValueCall(
   const target = access.expression;
   if (!ts.isPropertyAccessExpression(target) || target.questionDotToken) return null;
   const member = target.name.text;
-  if (!EMITTER_API_MEMBERS.has(member) || !isPureReference(target.expression)) return null;
+  if (!EMITTER_API_MEMBERS.has(member)) return null;
   const holderNode = target.expression;
   const emitterKind = builtinClassKind(RUNTIME_EMITTER_CLASS)!;
   const isPrototype =
     ts.isPropertyAccessExpression(holderNode) &&
     holderNode.name.text === "prototype" &&
     builtinClassKindOf(lowerer, holderNode.expression) === emitterKind;
+  // `EventEmitter.prototype` is a builtin read; any other holder must be
+  // effect-free, or its getter (and its exceptions) would be skipped.
+  if (!isPrototype && !isPureReference(lowerer, holderNode)) return null;
   const holder = isPrototype ? null : plainEmitterInfoOf(lowerer, holderNode);
   if (!isPrototype && (!holder || (member === "emit" && emitOverrideAtOrAbove(holder))))
     return null;

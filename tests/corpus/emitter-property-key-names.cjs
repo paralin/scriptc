@@ -24,3 +24,14 @@ ee.removeListener('null', onNull);
 ee.emit(null);
 ee.removeAllListeners(123);
 console.log(ee.listenerCount(123), ee.eventNames());
+
+// A number-literal name computed by a call is evaluated before it keys.
+/** @returns {7} */
+function nextName() {
+  console.log('name evaluated');
+  return 7;
+}
+ee.on(nextName(), (v) => console.log('seven', v));
+console.log(ee.emit(7, 'a'));
+console.log(ee.emit(nextName(), 'b'));
+console.log(ee.eventNames());

@@ -29,4 +29,11 @@ ee.emit('e', 7);
 EventEmitter.prototype.removeListener.call(ee, 'e', named);
 console.log(ee.listenerCount('e'));
 
+// A holder that is a record entry reads without effects, so the method
+// still runs typed. A holder fetched through an accessor is refused instead
+// (tests/diagnostics/ee-method-call-holder-accessor.ts); the class-field
+// holder is in emitter-method-call-holder.ts.
+const record = { emitter: other };
+console.log(record.emitter.emit.call(ee, 'a', 8));
+
 console.log(JSON.stringify(log));

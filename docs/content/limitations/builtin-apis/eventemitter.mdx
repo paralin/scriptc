@@ -2,6 +2,7 @@
   Number, `null`, `undefined`, and boolean names register under `String(name)`, as in Node.
   Computed string names with a constant prefix or suffix that excludes `error`, meta events, and stream-internal events pass arguments of the exact arity with checked conversion.
   Other names reach an EventEmitter as through an untyped value: a name computed at run time converts with `String(name)`, then the name is matched against the program's literal event names when the call runs.
+  The name expression is evaluated before it converts; a name whose static type is a number literal is a compile-time key only when it is a literal or a binding read.
   On streams, those names and names that may reach internal events are unsupported.
   Symbol names other than `events.errorMonitor` are unsupported.
   Once the program registers a listener under an unrestricted name, typed `listeners()`/`rawListeners()` results are unsupported for events that literal names register with typed listeners.
@@ -12,5 +13,6 @@
   A typed `error` or `errorMonitor` listener throws a `TypeError` when an emitted payload that is not an Error does not convert to its parameter.
   Reading EventEmitter methods as properties through an untyped value (`typeof emitter.listeners`) answers `undefined`.
   `EventEmitter.prototype.<method>.call(receiver, ...)` runs the method typed when `receiver` is statically an emitter instance; a receiver of type `any` runs the untyped method over its JavaScript `_events`, which does not reach a compiled emitter's listeners.
+  The method is read from `EventEmitter.prototype` or from an emitter reached through a binding, a stored field, or a record entry; an accessor or a call on that path is unsupported, since skipping it would drop its effects.
   `events.once` accepts EventEmitter and stream instances with a literal event name and an optional object-literal `{ signal }`; a stream's `data` event, other options values, and EventTarget emitters are unsupported.
   Reading `defaultMaxListeners` through a CommonJS destructured or member binding (`const { defaultMaxListeners } = require("events")`) is unsupported.

@@ -54,7 +54,7 @@ import { dynFallbackType, newFnCtx } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
-import { nullishExprUnitOf } from "./binding-analysis.js";
+import { nullishExprUnitOf, stripValueWrappers } from "./binding-analysis.js";
 import { functionUsesThis } from "./cjs-exports-object.js";
 import { isThisParameter } from "./call-signatures.js";
 import {
@@ -604,17 +604,25 @@ function isErrorMonitorRef(lowerer: Lowerer, arg: ts.Expression): boolean {
   return property !== undefined && isMonitorType(lowerer.checker.getTypeOfSymbol(property));
 }
 
+/** A number-literal typed name whose evaluation has no effects: the read of
+ * a binding, or the literal itself. A call or a property read typed as a
+ * number literal lowers as a run-time name so its effects still run. */
+function staticNumberName(arg: ts.Expression): boolean {
+  const expression = stripValueWrappers(arg);
+  return ts.isIdentifier(expression) || ts.isNumericLiteral(expression);
+}
+
 /** A compile-time event key (literalEventKey): a string-literal TYPE
  * (const bindings and literal unions of one member count — the
  * staticHeaderKeyOf stance) or the errorMonitor symbol. A number-literal
- * type and a `null`, `undefined`, `true` or `false` literal name the
- * string Node's listener table keys them by, the property key
- * `String(name)`: `on(123, fn)` registers under '123'. */
+ * type read without effects and a `null`, `undefined`, `true` or `false`
+ * literal name the string Node's listener table keys them by, the property
+ * key `String(name)`: `on(123, fn)` registers under '123'. */
 function literalEventName(lowerer: Lowerer, arg: ts.Expression): string | null {
   if (isErrorMonitorRef(lowerer, arg)) return ERROR_MONITOR_EVENT;
   const t = lowerer.typeOf(arg);
   if (t.isStringLiteralType()) return literalEventKey(t.value);
-  if (t.isNumberLiteralType()) return literalEventKey(String(t.value));
+  if (t.isNumberLiteralType() && staticNumberName(arg)) return literalEventKey(String(t.value));
   const unit = nullishExprUnitOf(lowerer, arg);
   if (unit !== null) return unit;
   let expression = arg;
