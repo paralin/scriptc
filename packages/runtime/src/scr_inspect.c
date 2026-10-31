@@ -1824,16 +1824,37 @@ static ScrStr *scr_insp_native_iterator(ScrDyn *d, double recurse, double depth)
        i < scr_map_iter_count(map) && (double)shown < g_max_array_length; i++) {
     if (!scr_map_iter_live(map, i)) continue;
     shown++;
-    ScrDyn *item;
+    ScrStr *text;
     if (pairs) {
-      item = scr_dyn_new_arr();
-      scr_dyn_arr_push(item, scr_map_dyn_key(map, i));
-      scr_dyn_arr_push(item, kind == 3 ? scr_map_dyn_key(map, i) : scr_map_dyn_value(map, i));
+      /* formatMapIterInner lays each entry out as the pair `[ key, value ]`
+       * through reduceToSingleString, so maxArrayLength bounds the number
+       * of entries the iterator lists and never trims the pair itself: a
+       * Map Entries iterator at maxArrayLength 1 shows `[ 'a', 1 ]` before
+       * its "... 1 more item" tail. A key or value keeps its own limit
+       * inside the pair. */
+      scr_insp_begin(recurse + 1);
+      ScrDyn *key = scr_map_dyn_key(map, i);
+      ScrStr *slot = scr_insp_dyn(key, recurse + 1, depth);
+      scr_insp_entry(slot, false);
+      scr_str_release(slot);
+      ScrDyn *value = kind == 3 ? scr_dyn_retain(key) : scr_map_dyn_value(map, i);
+      scr_dyn_release(key);
+      slot = scr_insp_dyn(value, recurse + 1, depth);
+      scr_dyn_release(value);
+      scr_insp_entry(slot, false);
+      scr_str_release(slot);
+      ScrStr *empty = scr_str_new("", 0);
+      ScrStr *pb0 = scr_str_new("[", 1);
+      ScrStr *pb1 = scr_str_new("]", 1);
+      text = scr_insp_end(empty, pb0, pb1, recurse + 1, true, false);
+      scr_str_release(empty);
+      scr_str_release(pb0);
+      scr_str_release(pb1);
     } else {
-      item = kind == 2 && selection == 0 ? scr_map_dyn_value(map, i) : scr_map_dyn_key(map, i);
+      ScrDyn *item = kind == 2 && selection == 0 ? scr_map_dyn_value(map, i) : scr_map_dyn_key(map, i);
+      text = scr_insp_dyn(item, recurse + 1, depth);
+      scr_dyn_release(item);
     }
-    ScrStr *text = scr_insp_dyn(item, recurse + 1, depth);
-    scr_dyn_release(item);
     scr_insp_entry(text, false);
     scr_str_release(text);
   }

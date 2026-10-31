@@ -51,6 +51,23 @@ console.log(
   inspect(new Map([[1, 2]]), { maxArrayLength: 0 }),
 );
 
+// A Map or Set entry iterator lists whole `[ key, value ]` pairs: the limit
+// bounds the number of entries and never trims a pair, while a key or value
+// inside the pair keeps its own limit.
+const pairs = new Map<string, number[]>([
+  ["a", [1, 2, 3]],
+  ["b", [4]],
+]);
+console.log(inspect(pairs.entries(), { maxArrayLength: 1, breakLength: 200 }));
+console.log(inspect(pairs.entries(), { maxArrayLength: 0, breakLength: 200 }));
+console.log(inspect(pairs.entries(), { maxArrayLength: null, breakLength: 200 }));
+console.log(inspect(pairs.keys(), { maxArrayLength: 1, breakLength: 200 }));
+const setPairs = new Set<number[]>([[1, 2], [3]]);
+console.log(inspect(setPairs.entries(), { maxArrayLength: 1, breakLength: 200 }));
+// A value inside the pair renders at the pair's own level, so depth reaches
+// it the way Node's iterator formatting does.
+console.log(inspect({ it: pairs.entries() }, { depth: 1, breakLength: 200 }));
+
 const typed = new Uint16Array(150);
 console.log(inspect(typed, { maxArrayLength: 4 }));
 console.log(inspect(typed, { maxArrayLength: 0 }));
