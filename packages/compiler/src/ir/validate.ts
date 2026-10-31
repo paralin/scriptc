@@ -6333,6 +6333,8 @@ function validateFunction(
           (!Number.isInteger(e.origin) || e.origin < 0 || e.origin >= declOriginCount)
         )
           err(`dynCheck origin ${e.origin} is not an index of declOrigins`, e.loc);
+        if (e.pathIndex !== undefined && (!Number.isInteger(e.pathIndex) || e.pathIndex < 0))
+          err(`dynCheck pathIndex ${e.pathIndex} is not an array position`, e.loc);
         // The target drives the emitted validator/builder: non-dyn,
         // non-void, JSON-representable (closures/class instances can never
         // be found inside a JSON dyn — the frontend rejects those casts).
