@@ -2,6 +2,7 @@ import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
+  CAUGHT,
   DYN,
   F64,
   STRING,
@@ -419,6 +420,29 @@ export function lowerAsyncDelegation(
       loc,
     },
   ];
+  /** IteratorClose with a throw completion: call the delegate's return()
+   * when it has one, and drop whatever it answers or throws, so the pending
+   * error is the one that propagates. */
+  const rejection = lowerer.declareHiddenLocal("%adelegateRejection", CAUGHT);
+  const closeQuietly: IrStmt[] = [
+    {
+      kind: "tryCatch",
+      tryBody: [
+        assign(method, get(iterator.ref, "return")),
+        {
+          kind: "if",
+          cond: not(test(method.ref, "nullish")),
+          then: [{ kind: "exprStmt", expr: call(method.ref, []), loc }],
+          else_: null,
+          loc,
+        },
+      ],
+      catchLocalId: null,
+      catchBody: [],
+      finallyBody: null,
+      loc,
+    },
+  ];
   /** A return completion of the delegating generator: the value is already
    * settled (awaited), so the request settles at completion. */
   const finish: IrStmt[] =
@@ -529,7 +553,35 @@ export function lowerAsyncDelegation(
             {
               kind: "if",
               cond: sync.ref,
-              then: [assign(value, awaitDyn(value.ref))],
+              then: [
+                {
+                  kind: "if",
+                  // A rejected value of a step that is not done, answering
+                  // next() or throw(), closes the delegate before the
+                  // rejection propagates (AsyncFromSyncIteratorContinuation's
+                  // closeOnRejection); a return() step's is passed through.
+                  cond: {
+                    kind: "logical",
+                    op: "&&",
+                    left: not(done.ref),
+                    right: not(returning.ref),
+                    type: BOOL,
+                    loc,
+                  },
+                  then: [
+                    {
+                      kind: "tryCatch",
+                      tryBody: [assign(value, awaitDyn(value.ref))],
+                      catchLocalId: rejection.id,
+                      catchBody: [...closeQuietly, { kind: "rethrow", localId: rejection.id, loc }],
+                      finallyBody: null,
+                      loc,
+                    },
+                  ],
+                  else_: [assign(value, awaitDyn(value.ref))],
+                  loc,
+                },
+              ],
               else_: null,
               loc,
             },

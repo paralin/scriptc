@@ -197,6 +197,47 @@ async function main() {
   });
   const k = forward(syncAbruptValue);
   await step("k", k);
+
+  // AsyncFromSyncIterator: a step that is not done and whose value is a
+  // rejected promise closes the synchronous delegate (its return() runs)
+  // before the rejection reaches the delegating generator; a done step's
+  // rejection does not close it.
+  const syncRejectedValue = syncIterable({
+    next() {
+      log("sync rejected-value next call");
+      return { done: false, value: Promise.reject(reason) };
+    },
+    return() {
+      log("sync rejected-value return call");
+      return { done: true };
+    },
+  });
+  const l = forward(syncRejectedValue);
+  await step("l", l);
+  const syncRejectedDone = syncIterable({
+    next() {
+      log("sync rejected-done next call");
+      return { done: true, value: Promise.reject(reason) };
+    },
+    return() {
+      log("sync rejected-done return call");
+      return { done: true };
+    },
+  });
+  const m = forward(syncRejectedDone);
+  await step("m", m);
+  // A return() that throws while closing: the rejection still propagates.
+  const syncRejectedThrowingReturn = syncIterable({
+    next() {
+      return { done: false, value: Promise.reject(reason) };
+    },
+    return() {
+      log("sync throwing-return return call");
+      throw new Error("from return");
+    },
+  });
+  const n = forward(syncRejectedThrowingReturn);
+  await step("n", n);
 }
 
 main().then(
