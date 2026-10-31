@@ -124,8 +124,9 @@ function readsBuiltinByName(lowerer: Lowerer, node: ts.ElementAccessExpression):
 /** The value a JavaScript source reads for the declared global `name`
  * taken as a value, whatever its spelling (`name`, `globalThis.name`,
  * `const { name } = globalThis`, `globalThis[name]`), or null when it
- * reads the opaque identity token. `reportFences` (builtinNamespaceValue)
- * is false for the program's lookup. */
+ * reads the opaque identity token. `reportFences` is false for the
+ * program's lookup, which holds every declared global's value whether or
+ * not the program reads it. */
 export function jsGlobalValueByName(
   lowerer: Lowerer,
   name: string,
@@ -133,7 +134,7 @@ export function jsGlobalValueByName(
   reportFences = true,
 ): IrExpr | null {
   return (
-    jsSpecialGlobalValue(lowerer, name, loc) ??
+    jsSpecialGlobalValue(lowerer, name, loc, reportFences) ??
     builtinNamespaceValue(lowerer, name, loc, reportFences) ??
     builtinGlobalValue(name, loc, true)
   );
@@ -194,8 +195,14 @@ function flowsIntoUntypedSlot(lowerer: Lowerer, node: ts.Expression): boolean {
 }
 
 /** jsGlobalValueByName for the globals other than the interned builtin
- * functions and constructors (builtinGlobalValue). */
-export function jsSpecialGlobalValue(lowerer: Lowerer, name: string, loc: SrcLoc): IrExpr | null {
+ * functions and constructors (builtinGlobalValue). `reportFences` is false
+ * for the program's lookup (jsGlobalValueByName). */
+export function jsSpecialGlobalValue(
+  lowerer: Lowerer,
+  name: string,
+  loc: SrcLoc,
+  reportFences = true,
+): IrExpr | null {
   if (name === "NaN" || name === "Infinity")
     return { kind: "numLit", value: name === "NaN" ? NaN : Infinity, type: F64, loc };
   if (name === "String" || name === "Number" || name === "Boolean" || name === "BigInt")
@@ -221,7 +228,7 @@ export function jsSpecialGlobalValue(lowerer: Lowerer, name: string, loc: SrcLoc
   if (name === "fetch") return { kind: "libCall", fn: "fetch.function", args: [], type: DYN, loc };
   if (name === "console")
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
-  return globalFunctionValue(lowerer, name, loc);
+  return globalFunctionValue(lowerer, name, loc, reportFences);
 }
 
 const URI_FUNCTIONS = new Set([

@@ -41,9 +41,34 @@ export function isUnloweredGlobal(name: string): boolean {
   return UNLOWERED.has(name);
 }
 
+/** The globals function values are built for: the ones read below, and the
+ * ones without a lowering. */
+const GLOBAL_VALUE_NAMES: ReadonlySet<string> = new Set([
+  "parseInt",
+  "parseFloat",
+  "isNaN",
+  "isFinite",
+  "Symbol",
+  "eval",
+  ...UNLOWERED.keys(),
+]);
+
+/** Whether a JavaScript source reads `name` as one of the function values
+ * this file builds (never as a class value). */
+export function hasGlobalFunctionValue(name: string): boolean {
+  return GLOBAL_VALUE_NAMES.has(name);
+}
+
 /** The value a JavaScript source reads for the global function `name`, or
- * null when it has none here. */
-export function globalFunctionValue(lowerer: Lowerer, name: string, loc: SrcLoc): IrExpr | null {
+ * null when it has none here. `reportFences` is false for the program's
+ * global lookup, which holds every declared global's value whether or not
+ * the program reads it: only a read reports the value's fence. */
+export function globalFunctionValue(
+  lowerer: Lowerer,
+  name: string,
+  loc: SrcLoc,
+  reportFences = true,
+): IrExpr | null {
   switch (name) {
     case "parseInt":
     case "parseFloat":
@@ -57,7 +82,7 @@ export function globalFunctionValue(lowerer: Lowerer, name: string, loc: SrcLoc)
       return evalValue(lowerer, loc);
     default: {
       const length = UNLOWERED.get(name);
-      return length === undefined ? null : unloweredValue(lowerer, name, length, loc);
+      return length === undefined ? null : unloweredValue(lowerer, name, length, loc, reportFences);
     }
   }
 }
@@ -181,8 +206,16 @@ function evalValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
 }
 
 /** A global without a lowering: calling or constructing it throws the
- * SC2020 fence its direct use reports. The fence is reported once. */
-function unloweredValue(lowerer: Lowerer, name: string, length: number, loc: SrcLoc): IrExpr {
+ * SC2020 fence its direct use reports. Each read that reaches the value
+ * reports the fence; the program's lookup holds the value without
+ * reporting one. */
+function unloweredValue(
+  lowerer: Lowerer,
+  name: string,
+  length: number,
+  loc: SrcLoc,
+  reportFences: boolean,
+): IrExpr {
   const fnName = `%builtin.fence.global.${name}`;
   const diag = noLoweringDiag(name, loc);
   if (!lowerer.liftedFns.some((fn) => fn.name === fnName)) {
@@ -196,8 +229,8 @@ function unloweredValue(lowerer: Lowerer, name: string, length: number, loc: Src
       ],
       loc,
     });
-    lowerer.runtimeFences.push(diag);
   }
+  if (reportFences) lowerer.runtimeFences.push(diag);
   return {
     kind: "dynFrom",
     value: {
