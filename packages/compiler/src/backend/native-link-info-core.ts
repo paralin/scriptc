@@ -90,6 +90,9 @@ export interface NativeLinkFeatures {
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically:
+   * scr_dyn_integrity.c. Absent (false) for programs without it. */
+  dynIntegrityQueries?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
