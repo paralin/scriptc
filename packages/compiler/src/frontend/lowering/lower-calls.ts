@@ -8148,6 +8148,41 @@ function isDynEntryPairsType(lowerer: Lowerer, t: IrType): boolean {
   return field("0")?.kind === "string" && field("1")?.kind === "dyn";
 }
 
+/** Object.seal, Object.freeze, Object.preventExtensions and their queries
+ * over a byte view (a typed array or a DataView) in JavaScript code. A view
+ * boxes BY REFERENCE and carries its integrity state on itself
+ * (ScrBytes.properties), so the checked-dynamic operations model it exactly:
+ * seal and freeze of a view with elements throw after making it
+ * non-extensible, as in V8. seal, freeze and preventExtensions answer the
+ * view itself, so the result converts back to the same view (a checked cast,
+ * which preserves its identity) wherever the element type admits the
+ * conversion — bytes<u8>, the DataView and Uint8Array case. A view of wider
+ * elements stays checked-dynamic, which the discarded statement form and a
+ * later comparison against the view both handle exactly. The queries answer
+ * a boolean. */
+export function lowerBytesIntegrity(
+  lowerer: Lowerer,
+  fn:
+    | "dyn.preventExtensions"
+    | "dyn.seal"
+    | "dyn.freeze"
+    | "dyn.isExtensible"
+    | "dyn.isSealed"
+    | "dyn.isFrozen",
+  view: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const query = fn.startsWith("dyn.is");
+  const result: IrExpr = {
+    kind: "libCall",
+    fn,
+    args: [lowerer.coerceToExpected(view, DYN)],
+    type: query ? BOOL : DYN,
+    loc,
+  };
+  return query ? result : lowerer.coerceToExpected(result, view.type);
+}
+
 /** True when the expression is statically a PLAIN OBJECT at runtime: a dyn
  *  object literal, or a record (a literal, a clone, or any expression of a
  *  record type, which dynFrom boxes field by field). Both build an ordinary
@@ -9113,6 +9148,22 @@ function lowerObjectStaticCall(
         ? extensible
         : { kind: "unary", op: "!", operand: extensible, type: BOOL, loc: locOf(call) };
     }
+    // A byte view carries its integrity state on itself and boxes by
+    // reference, so the checked-dynamic operations model these exactly.
+    if (value.type.kind === "bytes" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      const operation = {
+        preventExtensions: "dyn.preventExtensions",
+        isExtensible: "dyn.isExtensible",
+        seal: "dyn.seal",
+        isSealed: "dyn.isSealed",
+      } as const;
+      return lowerBytesIntegrity(
+        lowerer,
+        operation[member as keyof typeof operation],
+        value,
+        locOf(call),
+      );
+    }
     if (member === "preventExtensions" || member === "seal") {
       const integrity = lowerClassIntegrity(lowerer, call, member, value);
       if (integrity) return integrity;
@@ -9185,6 +9236,8 @@ function lowerObjectStaticCall(
           loc,
         };
     }
+    if (probedKind === "bytes" && isJsSourceFile(ts.getSourceFileOfNode(call)))
+      return lowerBytesIntegrity(lowerer, "dyn.isFrozen", lowerer.lowerExpr(argNode), locOf(call));
     const value = lowerer.lowerExprExpecting(argNode, DYN);
     return { kind: "libCall", fn: "dyn.isFrozen", args: [value], type: BOOL, loc: locOf(call) };
   }
@@ -9249,6 +9302,8 @@ function lowerObjectStaticCall(
       return lowerNativeFreeze(lowerer, "array.freeze", value, locOf(call));
     if (value.type.kind === "map" || value.type.kind === "set")
       return lowerNativeFreeze(lowerer, "collection.preventExtensions", value, locOf(call));
+    if (value.type.kind === "bytes" && isJsSourceFile(ts.getSourceFileOfNode(call)))
+      return lowerBytesIntegrity(lowerer, "dyn.freeze", value, locOf(call));
     lowerer.noLowering(
       "Object.freeze of a possibly-aliased value",
       call,
