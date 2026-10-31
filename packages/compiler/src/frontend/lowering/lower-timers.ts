@@ -662,10 +662,11 @@ function untypedTimerHandle(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcL
  * bound to its handle, as Node calls it with the Timeout or Immediate
  * (scr_timer_this_callback). Arrows, and function expressions and
  * declarations that never read `this` in the body or in a parameter
- * initializer, keep the plain callback;
- * any other value (test/common's mustCall wrapper, which forwards `this`)
- * is bound. TypeScript files keep plain callbacks: a plain function's
- * `this` is refused there. */
+ * initializer, keep the plain callback; an identifier resolves through a
+ * `const` binding to its initializer, so a stored arrow or function is
+ * classified the same way. Any other value (test/common's mustCall
+ * wrapper, which forwards `this`) is bound. TypeScript files keep plain
+ * callbacks: a plain function's `this` is refused there. */
 function withTimerThis(lowerer: Lowerer, node: ts.Expression, cb: IrExpr, loc: SrcLoc): IrExpr {
   if (!isJsSourceFile(ts.getSourceFileOfNode(node)) || !callbackMayReadThis(lowerer, node))
     return cb;
@@ -676,16 +677,35 @@ function withTimerThis(lowerer: Lowerer, node: ts.Expression, cb: IrExpr, loc: S
 }
 
 function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
-  let callback = node;
-  while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
-  if (ts.isArrowFunction(callback)) return false;
-  if (ts.isFunctionExpression(callback)) return ownThisIn(callback);
-  if (ts.isIdentifier(callback)) {
+  let callback = unparenthesized(node);
+  const seen = new Set<ts.Node>();
+  for (;;) {
+    if (ts.isArrowFunction(callback)) return false;
+    if (ts.isFunctionExpression(callback)) return ownThisIn(callback);
+    if (!ts.isIdentifier(callback)) return true;
     const declaration = lowerer.resolveValueSymbol(callback)?.valueDeclaration;
     if (declaration && ts.isFunctionDeclaration(declaration) && declaration.body)
       return ownThisIn(declaration);
+    // A `const` binding holds one value, so the callback is its initializer:
+    // an arrow stored that way keeps the module's `this` like any other
+    // arrow, and a function expression is classified by its own body.
+    if (
+      !declaration ||
+      !ts.isVariableDeclaration(declaration) ||
+      !declaration.initializer ||
+      (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+      seen.has(declaration)
+    )
+      return true;
+    seen.add(declaration);
+    callback = unparenthesized(declaration.initializer);
   }
-  return true;
+}
+
+function unparenthesized(node: ts.Expression): ts.Expression {
+  let expression = node;
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  return expression;
 }
 
 /** Whether a function reads its own `this`: in its body, or in the

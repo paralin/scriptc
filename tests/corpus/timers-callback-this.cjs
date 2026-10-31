@@ -5,8 +5,9 @@
 // also with trailing arguments, for a setTimeout called as a statement, and
 // for a callback whose signature the timer adapts.
 // clearInterval(this) stops an interval from inside it, and the clear
-// functions accept the handle a callback reads as its own `this`. Arrows
-// keep the module's `this`, and a nested plain call sees undefined.
+// functions accept the handle a callback reads as its own `this`. Arrows,
+// also through a const binding, keep the module's `this`, and a nested
+// plain call sees undefined.
 function forwarding(fn) {
   return function (...args) {
     return fn.apply(this, args);
@@ -44,6 +45,20 @@ const clearedTimeout = setTimeout(function () {
 setTimeout(() => {
   seen.push(['arrow', this === module.exports]);
 }, 2);
+// A const binding of an arrow is still an arrow: it keeps the module's
+// `this`, and a plain call inside it has no receiver of its own.
+const storedArrow = () => {
+  function inner() {
+    return this;
+  }
+  seen.push(['stored arrow', this === module.exports, inner() === undefined]);
+};
+setTimeout(storedArrow, 2);
+// A const binding of a function that reads `this` is bound like the function.
+const storedFunction = function () {
+  seen.push(['stored function', this === storedFunctionHandle]);
+};
+const storedFunctionHandle = setTimeout(storedFunction, 1);
 function plain() {
   return this;
 }
