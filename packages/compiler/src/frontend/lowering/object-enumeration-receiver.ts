@@ -12,11 +12,13 @@ import { varRef } from "../../ir/build.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** Array/property reads retain a missing-value arm even when the checker
- * promises a record. Object enumeration must check it before reading fields. */
+ * promises a record or a class instance. Object enumeration, and an
+ * Object.assign into the value, must check it before reading or writing
+ * fields: the missing arm throws Node's ToObject TypeError. */
 export function objectEnumerationReceiver(
   lowerer: Lowerer,
   receiver: IrExpr,
-  expected: IrType & { kind: "record" },
+  expected: IrType & { kind: "record" | "object" },
   loc: SrcLoc,
 ): IrExpr {
   if (receiver.type.kind !== "union") return receiver;
@@ -25,7 +27,7 @@ export function objectEnumerationReceiver(
   const tag = lowerer.armTag(source.unionId, expected);
   if (tag < 0 || !arms?.every((arm) => isUnitType(arm) || typeEquals(arm, expected)))
     return receiver;
-  const key = `obj.receiver:${source.unionId}:${expected.shapeId}`;
+  const key = `obj.receiver:${source.unionId}:${expected.kind === "record" ? expected.shapeId : expected.className}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (name === undefined) {
     name = keyedHelperName(lowerer, "%obj.receiver", key);
