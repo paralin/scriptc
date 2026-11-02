@@ -7901,25 +7901,30 @@ function classAssignPlan(lowerer: Lowerer, className: string, srcShapeId: string
 /** Interned `%obj.assignClass.<n>(o, s)` — Object.assign's per-field
  * write of a record into a class instance (classAssignPlan's gate):
  * optional source fields write only when present, and the instance
- * returns. */
+ * returns. `targetT` is the target as represented: the instance, or a
+ * union carrying it beside missing-value arms (assignTargetType), which
+ * the helper checks first. */
 function classAssignHelper(
   lowerer: Lowerer,
   className: string,
   srcShapeId: string,
+  targetT: IrType,
   loc: SrcLoc,
 ): string | null {
   if (!classAssignPlan(lowerer, className, srcShapeId)) return null;
-  const key = `obj.assignClass:${className}:${srcShapeId}`;
+  const oT: IrType & { kind: "object" } = { kind: "object", className };
+  const receiver = assignReceiver(lowerer, targetT, oT, "o", loc);
+  if (receiver === null) return null;
+  const key = `obj.assignClass:${className}:${srcShapeId}${receiver.key}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const helper = keyedHelperName(lowerer, "%obj.assignClass", key);
   lowerer.arrHofHelpers.set(key, helper);
   const sShape = lowerer.shapes.get(srcShapeId)!;
-  const oT: IrType = { kind: "object", className };
   const sT: IrType = { kind: "record", shapeId: srcShapeId };
-  const oRef: IrExpr = { kind: "varRef", localId: "o.0", type: oT, loc };
+  const oRef = receiver.ref;
   const sRef: IrExpr = { kind: "varRef", localId: "s.0", type: sT, loc };
-  const body: IrStmt[] = [];
+  const body: IrStmt[] = [...receiver.prologue];
   const info = lowerer.classes.get(className)!;
   for (const f of sShape.fields) {
     const declared = info.fields.get(f.name)!;
@@ -7951,13 +7956,14 @@ function classAssignHelper(
   lowerer.liftedFns.push({
     name: helper,
     params: [
-      { localId: "o.0", name: "o", type: oT },
+      { localId: "o.0", name: "o", type: targetT },
       { localId: "s.0", name: "s", type: sT },
     ],
     returnType: oT,
     locals: [
-      { id: "o.0", name: "o", type: oT, mutable: true },
+      { id: "o.0", name: "o", type: targetT, mutable: true },
       { id: "s.0", name: "s", type: sT, mutable: true },
+      ...receiver.locals,
     ],
     body,
     loc,
@@ -7975,20 +7981,23 @@ function recordAssignHelper(
   lowerer: Lowerer,
   targetShapeId: string,
   srcShapeId: string,
+  targetT: IrType,
   loc: SrcLoc,
-): string {
-  const key = `obj.assign:${targetShapeId}:${srcShapeId}`;
+): string | null {
+  const tT: IrType & { kind: "record" } = { kind: "record", shapeId: targetShapeId };
+  const receiver = assignReceiver(lowerer, targetT, tT, "t", loc);
+  if (receiver === null) return null;
+  const key = `obj.assign:${targetShapeId}:${srcShapeId}${receiver.key}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const helper = keyedHelperName(lowerer, "%obj.assign", key);
   lowerer.arrHofHelpers.set(key, helper);
   const sShape = lowerer.shapes.get(srcShapeId)!;
   const tShape = lowerer.shapes.get(targetShapeId)!;
-  const tT: IrType = { kind: "record", shapeId: targetShapeId };
   const sT: IrType = { kind: "record", shapeId: srcShapeId };
-  const tRef: IrExpr = { kind: "varRef", localId: "t.0", type: tT, loc };
+  const tRef = receiver.ref;
   const sRef: IrExpr = { kind: "varRef", localId: "s.0", type: sT, loc };
-  const body: IrStmt[] = [];
+  const body: IrStmt[] = [...receiver.prologue];
   for (const f of sShape.fields) {
     const get: IrExpr = {
       kind: "recordGet",
@@ -8018,18 +8027,63 @@ function recordAssignHelper(
   lowerer.liftedFns.push({
     name: helper,
     params: [
-      { localId: "t.0", name: "t", type: tT },
+      { localId: "t.0", name: "t", type: targetT },
       { localId: "s.0", name: "s", type: sT },
     ],
     returnType: tT,
     locals: [
-      { id: "t.0", name: "t", type: tT, mutable: true },
+      { id: "t.0", name: "t", type: targetT, mutable: true },
       { id: "s.0", name: "s", type: sT, mutable: true },
+      ...receiver.locals,
     ],
     body,
     loc,
   });
   return helper;
+}
+
+/** The record or class instance an `Object.assign` target holds: its
+ * represented type, or the one present arm of a read that keeps
+ * missing-value arms beside it, as an element read inside a function does
+ * (`Object.assign(fighters[i], { kills: 0 })`, whose index may be out of
+ * bounds). Null for any other target. */
+function assignTargetType(
+  lowerer: Lowerer,
+  target: IrExpr | null | undefined,
+): (IrType & { kind: "record" | "object" }) | null {
+  const type = target?.type;
+  if (type?.kind === "record" || type?.kind === "object") return type;
+  if (type?.kind !== "union") return null;
+  const present = lowerer.unions.get(type.unionId)?.arms.filter((arm) => !isUnitType(arm));
+  const arm = present?.length === 1 ? present[0]! : null;
+  return arm?.kind === "record" || arm?.kind === "object" ? arm : null;
+}
+
+/** The target of an Object.assign copy helper whose parameter `<name>.0`
+ * holds `targetT`: the parameter itself when it is `expected`, or a local
+ * `<name>.1` the prologue narrows it into, throwing Node's ToObject
+ * TypeError on a missing arm. The check runs inside the helper, after
+ * both arguments evaluate, in Node's order. `key` tells the two helpers
+ * apart; null when targetT holds no such arm. */
+function assignReceiver(
+  lowerer: Lowerer,
+  targetT: IrType,
+  expected: IrType & { kind: "record" | "object" },
+  name: string,
+  loc: SrcLoc,
+): { ref: IrExpr; prologue: IrStmt[]; locals: IrLocal[]; key: string } | null {
+  const param: IrExpr = { kind: "varRef", localId: `${name}.0`, type: targetT, loc };
+  if (typeEquals(targetT, expected)) return { ref: param, prologue: [], locals: [], key: "" };
+  if (targetT.kind !== "union") return null;
+  const narrowed = objectEnumerationReceiver(lowerer, param, expected, loc);
+  if (!typeEquals(narrowed.type, expected)) return null;
+  const localId = `${name}.1`;
+  return {
+    ref: { kind: "varRef", localId, type: expected, loc },
+    prologue: [{ kind: "varDecl", localId, init: narrowed, loc }],
+    locals: [{ id: localId, name, type: expected, mutable: false }],
+    key: `:${targetT.unionId}`,
+  };
 }
 
 /** The `Iterator` global's statics (ES2025): `Iterator.from` over a typed
@@ -8751,26 +8805,31 @@ function lowerObjectStaticCall(
       // all fields the class declares with the same types
       // (`Object.assign(this, { retries: 3 })`): the per-field write into
       // the instance, returning it — the instance mutates in place.
-      if (tProbe?.type.kind === "object" && sProbe?.type.kind === "record") {
-        const helper = classAssignPlan(lowerer, tProbe.type.className, sProbe.type.shapeId);
+      const tType = assignTargetType(lowerer, tProbe);
+      if (tType?.kind === "object" && sProbe?.type.kind === "record") {
+        const helper = classAssignPlan(lowerer, tType.className, sProbe.type.shapeId);
         if (helper) {
           const loc = locOf(call);
           const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
           const source = lowerer.lowerExpr(call.arguments.nodes[1]!);
-          if (target.type.kind === "object" && source.type.kind === "record") {
+          if (
+            typeEquals(assignTargetType(lowerer, target) ?? DYN, tType) &&
+            source.type.kind === "record"
+          ) {
             const name = classAssignHelper(
               lowerer,
-              target.type.className,
+              tType.className,
               source.type.shapeId,
+              target.type,
               loc,
             );
             if (name)
-              return { kind: "call", callee: name, args: [target, source], type: target.type, loc };
+              return { kind: "call", callee: name, args: [target, source], type: tType, loc };
           }
         }
       }
-      if (tProbe?.type.kind === "record" && sProbe?.type.kind === "record") {
-        const tShape = lowerer.shapes.get(tProbe.type.shapeId);
+      if (tType?.kind === "record" && sProbe?.type.kind === "record") {
+        const tShape = lowerer.shapes.get(tType.shapeId);
         const sShape = lowerer.shapes.get(sProbe.type.shapeId);
         const ok =
           tShape &&
@@ -8794,14 +8853,19 @@ function lowerObjectStaticCall(
           const loc = locOf(call);
           const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
           const source = lowerer.lowerExpr(call.arguments.nodes[1]!);
-          if (target.type.kind === "record" && source.type.kind === "record") {
+          if (
+            typeEquals(assignTargetType(lowerer, target) ?? DYN, tType) &&
+            source.type.kind === "record"
+          ) {
             const helper = recordAssignHelper(
               lowerer,
-              target.type.shapeId,
+              tType.shapeId,
               source.type.shapeId,
+              target.type,
               loc,
             );
-            return { kind: "call", callee: helper, args: [target, source], type: target.type, loc };
+            if (helper)
+              return { kind: "call", callee: helper, args: [target, source], type: tType, loc };
           }
         }
       }
