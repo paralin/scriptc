@@ -124,6 +124,84 @@ function unitArmedCollectionArm(
   return arm && arms.every((a) => a === arm || isUnitType(a)) ? arm : null;
 }
 
+/** `slots.delete(k)` over a union of Maps (`Map<K, A> | Map<K, B>`, the
+ * element of `[this.prepared, this.asked]`). has and delete read no value,
+ * so each arm runs its own intrinsic on the narrowed receiver; the key
+ * lowers once, so every arm must share the key type. Null when the call
+ * is not such a call. */
+function lowerMapUnionKeyCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  name: string,
+  type: IrType | null | undefined,
+): IrExpr | null {
+  if (name !== "has" && name !== "delete") return null;
+  if (type?.kind !== "union") return null;
+  const arms = lowerer.unions.get(type.unionId)?.arms;
+  if (!arms || arms.length < 2) return null;
+  const first = arms[0]!;
+  if (first.kind !== "map") return null;
+  if (!arms.every((arm) => arm.kind === "map" && typeEquals(arm.key, first.key))) return null;
+  if (!lowerer.isStdlibMember(access)) return null;
+  const loc = locOf(call);
+  const value = lowerer.lowerExpr(access.expression);
+  if (!typeEquals(value.type, type)) {
+    lowerer.noLowering(
+      `${name}() on this union of Maps`,
+      access.expression,
+      "the receiver lowered to another layout than its union of Maps",
+    );
+  }
+  // JS evaluates the receiver, then the key, each once. Both are saved
+  // ahead of the arms, even a plain variable: a captured one read first
+  // inside one arm would not dominate its read in the other.
+  const stmts: IrStmt[] = [];
+  const once = (expr: IrExpr, label: string): IrExpr => {
+    if (expr.kind === "numLit" || expr.kind === "strLit") return expr;
+    const local = lowerer.declareHiddenLocal(label, expr.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: expr, loc });
+    return varRef(local.id, expr.type, loc);
+  };
+  const receiver = once(value, "%mapUnionReceiver");
+  const key = once(lowerer.lowerCollectionKey(call.arguments.nodes[0]!, first.key), "%mapUnionKey");
+  const armCall = (tag: number): IrExpr => ({
+    kind: "mapIntrinsic",
+    method: name,
+    receiver: {
+      kind: "unionNarrow",
+      unionId: type.unionId,
+      tag,
+      value: receiver,
+      type: arms[tag]!,
+      loc,
+    },
+    args: [key],
+    type: BOOL,
+    loc,
+  });
+  let result = armCall(arms.length - 1);
+  for (let tag = arms.length - 2; tag >= 0; tag--) {
+    result = {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId: type.unionId,
+        tag,
+        negated: false,
+        value: receiver,
+        type: BOOL,
+        loc,
+      },
+      then: armCall(tag),
+      else_: result,
+      type: BOOL,
+      loc,
+    };
+  }
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: BOOL, loc };
+}
+
 /** Ambient Map method calls. `get`/`set`/`has`/`delete`/`clear` lower to
  * mapIntrinsic; `forEach` desugars to a direct call of a synthetic loop
  * function over the iteration primitives (lowerMapForEachCall). Null when
@@ -146,7 +224,11 @@ export function lowerMapMethodCall(
       probedUntyped = true;
     }
   }
-  if (receiverIr?.kind !== "map") receiverIr = unitArmedCollectionArm(lowerer, receiverIr, "map");
+  if (receiverIr?.kind !== "map") {
+    const armed = unitArmedCollectionArm(lowerer, receiverIr, "map");
+    if (armed === null) return lowerMapUnionKeyCall(lowerer, call, access, name, receiverIr);
+    receiverIr = armed;
+  }
   if (receiverIr?.kind !== "map") return null;
   // Collection views can refine has() while retaining its native ABI.
   if (!probedUntyped && !lowerer.isStdlibMember(access) && name !== "has") return null;
