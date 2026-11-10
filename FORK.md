@@ -14,10 +14,14 @@ fork's GitHub releases until upstream ships the fixes.
 
 ## Patches
 
-| Branch                  | Fixes                                              | Upstream |
-| ----------------------- | -------------------------------------------------- | -------- |
-| `library-decl-adopt`    | Libraries with class casts link `scr_decl_adopt.c` | open     |
-| `object-assign-element` | `Object.assign` into an array element compiles     | open     |
+| Branch                              | Fixes                                                  | Upstream |
+| ----------------------------------- | ------------------------------------------------------ | -------- |
+| `library-decl-adopt`                | Libraries with class casts link `scr_decl_adopt.c`     | open     |
+| `object-assign-element`             | `Object.assign` into an array element compiles         | open     |
+| `nullish-assignment-call`           | A call on an inline `??=` assignment compiles          | open     |
+| `map-union-has-delete`              | `has` and `delete` on a union of Maps compile          | open     |
+| `tuple-element-compound-assignment` | Compound assignment to a tuple element compiles        | open     |
+| `untyped-let-hole-read`             | An untyped `let` read before assignment is `undefined` | open     |
 
 Upstream fixed generic class methods (#1), union checks on optional class
 fields (#2) and references across dynamic calls (#8) on its own, so the fork no
