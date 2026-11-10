@@ -557,6 +557,33 @@ function isArrayBufferViewFieldRead(lowerer: Lowerer, node: ts.Node): boolean {
  * the same union (unnarrowed use), to a SUB-union (partial narrowing —
  * unrepresentable without a re-tag), or to nothing (`never` in an
  * exhaustive default) leaves the expression union-typed. */
+/**
+ * Whether symbol is a `let c;` or `var c;` binding with no type and no
+ * initializer, in TypeScript or JavaScript. Its flow types come from what the
+ * code assigns, and the checker's types for those values can omit undefined
+ * (`c = s[i]` past the end, or at a hole of a sparse table), so a read keeps
+ * the actual value instead of checking it into the flow type.
+ */
+function isUntypedBareBinding(symbol: ts.Symbol | null | undefined): boolean {
+  return (
+    !!symbol &&
+    symbol.declarations.some(
+      (decl) =>
+        ts.isVariableDeclaration(decl) &&
+        decl.initializer === undefined &&
+        decl.type === undefined &&
+        ts.isIdentifier(decl.name) &&
+        decl.parent?.parent !== undefined &&
+        ts.isVariableStatement(decl.parent.parent) &&
+        !/@type\b/.test(
+          ts
+            .getSourceFileOfNode(decl)
+            .text.slice(decl.parent?.parent?.pos ?? decl.pos, ts.tokenStartOfNode(decl)),
+        ),
+    )
+  );
+}
+
 export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrExpr {
   if (
     (expr.type.kind === "union" || expr.type.kind === "dyn") &&
@@ -663,6 +690,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         if (bound && lowerer.mapTypeOf(bound)?.kind === "dyn") return expr;
       }
     }
+    if (ts.isIdentifier(node) && isUntypedBareBinding(lowerer.resolveValueSymbol(node))) return expr;
     if (isJsSourceFile(ts.getSourceFileOfNode(node)) && ts.isIdentifier(node)) {
       const symbol = lowerer.resolveValueSymbol(node);
       if (
@@ -700,27 +728,6 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         symbol &&
         symbol.declarations.some(
           (decl) => ts.isVariableDeclaration(decl) && jsBindingHasOpenWrites(lowerer, decl),
-        )
-      )
-        return expr;
-      // A `let c;` binding without a type takes its flow types from what
-      // the code assigns, and the checker's types for those values can omit
-      // undefined (`c = s[i]` past the end): reads keep the actual value.
-      if (
-        symbol &&
-        symbol.declarations.some(
-          (decl) =>
-            ts.isVariableDeclaration(decl) &&
-            decl.initializer === undefined &&
-            decl.type === undefined &&
-            ts.isIdentifier(decl.name) &&
-            decl.parent?.parent !== undefined &&
-            ts.isVariableStatement(decl.parent.parent) &&
-            !/@type\b/.test(
-              ts
-                .getSourceFileOfNode(decl)
-                .text.slice(decl.parent?.parent?.pos ?? decl.pos, ts.tokenStartOfNode(decl)),
-            ),
         )
       )
         return expr;
