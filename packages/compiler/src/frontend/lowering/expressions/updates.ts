@@ -63,7 +63,12 @@ import type { CompoundOp } from "../surfaces.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
 import { declareContextLocal } from "../function-context.js";
-import { keyedFieldTarget, keyedFieldWrite, saveKeyedFieldKey } from "./keyed-field-targets.js";
+import {
+  keyedFieldTarget,
+  keyedFieldWrite,
+  saveKeyedFieldKey,
+  tupleElementTarget,
+} from "./keyed-field-targets.js";
 
 /** Read-modify-write updates read the member first: an unassigned
  * deferred-init receiver throws Node's member-read TypeError. */
@@ -587,7 +592,9 @@ export function lowerIncDec(
     }
     const target = ts.isPropertyAccessExpression(access)
       ? lowerer.fieldTarget(access)
-      : (symbolFieldTarget(lowerer, access) ?? keyedFieldTarget(lowerer, access, true));
+      : (symbolFieldTarget(lowerer, access) ??
+          keyedFieldTarget(lowerer, access, true) ??
+          tupleElementTarget(lowerer, access));
     if (target && lowerer.dynConvertible(target.fieldType)) {
       checkDeferredMemberReceiver(lowerer, target, access);
       target.obj = save(target.obj, "%incrementReceiver");
@@ -1320,7 +1327,9 @@ export function lowerFieldCompoundValue(
   const targetOf = (): FieldTarget | null =>
     ts.isPropertyAccessExpression(access)
       ? (lowerer.fieldTarget(access) ?? assertedUnionFieldTarget(lowerer, access))
-      : (symbolFieldTarget(lowerer, access) ?? keyedFieldTarget(lowerer, access, true));
+      : (symbolFieldTarget(lowerer, access) ??
+          keyedFieldTarget(lowerer, access, true) ??
+          tupleElementTarget(lowerer, access));
   const target = targetOf();
   if (!target)
     lowerer.unsupported("SC1090", access, "compound assignment to unsupported field targets");

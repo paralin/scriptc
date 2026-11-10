@@ -122,6 +122,7 @@ import {
 import { isClassCallback } from "../class-callbacks.js";
 import {
   isKeyedFieldAccess,
+  isTupleElementAccess,
   keyedFieldRead,
   keyedFieldWrite,
   sameTypedFieldKeys,
@@ -2344,7 +2345,7 @@ export function lowerElementCompoundParts(
   // A record through a computed key (`totals[side] += n` with a literal
   // union key, `counts[name] += 1` on an index-signature record): the
   // member compound's receiver, key, old value, rhs, write sequence.
-  if (isKeyedFieldAccess(lowerer, target))
+  if (isKeyedFieldAccess(lowerer, target) || isTupleElementAccess(lowerer, target))
     return { expr: lowerFieldCompoundValue(lowerer, target, op, expr.right, loc), stmts: null };
   const checked = lowerer.lowerExpr(target.expression);
   // A typed callable's element is its own-property table entry: the same
