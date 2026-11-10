@@ -63,6 +63,53 @@ export function isKeyedFieldAccess(lowerer: Lowerer, access: ts.ElementAccessExp
   return keys !== null && keys.every((k) => shape.fields.some((f) => f.name === k));
 }
 
+/** The field of a tuple a numeric literal index names (`into[0]` on
+ * `[number, number, number]`: the record field "0"), or null. */
+function tupleElementField(
+  lowerer: Lowerer,
+  access: ts.ElementAccessExpression,
+): { shapeId: string; name: string; type: IrType } | null {
+  if (access.questionDotToken || isJsSourceFile(ts.getSourceFileOfNode(access))) return null;
+  if (!ts.isNumericLiteral(access.argumentExpression)) return null;
+  const receiver = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  if (receiver?.kind !== "record") return null;
+  const shape = lowerer.shapes.get(receiver.shapeId);
+  if (!shape?.tuple) return null;
+  const name = String(Number(access.argumentExpression.text));
+  const field = shape.fields.find((candidate) => candidate.name === name);
+  return field ? { shapeId: receiver.shapeId, name, type: field.type } : null;
+}
+
+/** isTupleElementAccess reports whether access names a tuple's element by a numeric literal. */
+export function isTupleElementAccess(lowerer: Lowerer, access: ts.ElementAccessExpression): boolean {
+  return tupleElementField(lowerer, access) !== null;
+}
+
+/** The target of a read-modify-write of a tuple's element through a
+ * numeric literal index (`into[0] += 1`), or null when access is not one. */
+export function tupleElementTarget(
+  lowerer: Lowerer,
+  access: ts.ElementAccessExpression,
+): FieldTarget | null {
+  const field = tupleElementField(lowerer, access);
+  if (!field) return null;
+  const obj = lowerer.lowerExpr(access.expression);
+  if (obj.type.kind !== "record" || obj.type.shapeId !== field.shapeId) {
+    lowerer.unsupported(
+      "SC1090",
+      access.expression,
+      `updating an element of a tuple held as '${lowerer.fmt(obj.type)}'`,
+    );
+  }
+  return {
+    container: "record",
+    obj,
+    shapeId: field.shapeId,
+    field: field.name,
+    fieldType: field.type,
+  };
+}
+
 /** The target of a read-modify-write through `r[k]`, or null when
  * isKeyedFieldAccess declines. A literal-union key dispatches over the
  * declared fields it names, which must share one type; a string key on a
