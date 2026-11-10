@@ -315,17 +315,41 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
   // slot, so a kept layout would rebuild an existing value and take a later
   // write through it (SC2021), as the plain assignment's store does.
   refuseCopiedStore(lowerer, target, storage, expr.right);
+  // `(state.used ??= new Set()).add(id)`: the result is never nullish, so
+  // where the left holds one present arm and the checker types the whole
+  // expression as that arm, the right side builds the arm, the slot stores
+  // it wrapped, and the expression answers the arm itself, as `a ?? b`
+  // does, so a call on it reaches the arm's own methods.
+  const present =
+    nullish && rhs === null ? presentArmOf(lowerer, read.type) : null;
+  // An untyped empty collection (`new Map()`, which the checker joins in
+  // as `Map<any, any>`) builds as the arm, as the fallback of `a ?? b` does.
+  const fresh = present !== null ? lowerer.emptyCollectionFor(expr.right, present) : null;
+  if (present !== null && (fresh !== null || typeEquals(lowerer.irTypeOf(expr), present))) {
+    const built = fresh ?? lowerer.lowerExprExpecting(expr.right, present);
+    if (typeEquals(built.type, present)) {
+      const local = lowerer.declareHiddenLocal("%shortCircuitValue", present);
+      const ref = varRef(local.id, present, loc);
+      const right: IrExpr = {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: local.id, init: built, loc },
+          write(lowerer.coerceInto(expr.right, ref, storage)),
+        ],
+        result: ref,
+        type: present,
+        loc,
+      };
+      return finish({ kind: "nullish", left: read, right, type: present, loc });
+    }
+    rhs = lowerer.coerceInto(expr.right, built, storage);
+  }
   const value = rhs ?? lowerer.lowerExprExpecting(expr.right, storage);
   const assigned = lowerer.declareHiddenLocal("%shortCircuitValue", value.type);
   const ref = varRef(assigned.id, value.type, loc);
+  const stored: IrStmt[] = [{ kind: "varDecl", localId: assigned.id, init: value, loc }, write(ref)];
   const result = lowerer.coerceInto(expr.right, ref, read.type);
-  const right: IrExpr = {
-    kind: "seqExpr",
-    stmts: [{ kind: "varDecl", localId: assigned.id, init: value, loc }, write(ref)],
-    result,
-    type: result.type,
-    loc,
-  };
+  const right: IrExpr = { kind: "seqExpr", stmts: stored, result, type: result.type, loc };
   if (!nullish) {
     // Saving even a bare local matters: the RHS or an accessor setter can
     // change that binding, and the expression must still yield the value
@@ -346,6 +370,15 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
     return finish(right);
   }
   return finish({ kind: "nullish", left: read, right, type: read.type, loc });
+}
+
+/** The one arm of an optional union that is not undefined or null, or null. */
+function presentArmOf(lowerer: Lowerer, type: IrType): IrType | null {
+  if (type.kind !== "union") return null;
+  const arms = lowerer.unions.get(type.unionId)?.arms;
+  if (!arms || !arms.some(isUnitType)) return null;
+  const rest = arms.filter((arm) => !isUnitType(arm));
+  return rest.length === 1 ? rest[0]! : null;
 }
 
 /** The value type of a pure index-signature record shape (no declared
