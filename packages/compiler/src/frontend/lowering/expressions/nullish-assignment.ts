@@ -320,8 +320,13 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
   // expression as that arm, the right side builds the arm, the slot stores
   // it wrapped, and the expression answers the arm itself, as `a ?? b`
   // does, so a call on it reaches the arm's own methods.
+  // A right side that is itself a union, such as a narrowed
+  // discriminated-union value, lowers against the slot's union below: one
+  // arm cannot take every arm of it (SC2003).
   const present =
-    nullish && rhs === null ? presentArmOf(lowerer, read.type) : null;
+    nullish && rhs === null && lowerer.irTypeOf(expr.right).kind !== "union"
+      ? presentArmOf(lowerer, read.type)
+      : null;
   // An untyped empty collection (`new Map()`, which the checker joins in
   // as `Map<any, any>`) builds as the arm, as the fallback of `a ?? b` does.
   const fresh = present !== null ? lowerer.emptyCollectionFor(expr.right, present) : null;
