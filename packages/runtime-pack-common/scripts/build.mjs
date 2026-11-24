@@ -753,6 +753,14 @@ async function build() {
         ? [[join(await icuSourceRoot(), "LICENSE"), "artifacts/licenses/icu.txt", "Unicode-3.0"]]
         : []),
     ];
+    // Only the WebAssembly pack links dlmalloc (scr_wasm_malloc.c).
+    if (config.platform === "wasi") {
+      licensed.push([
+        join(vendorRoot, "dlmalloc", "LICENSE-MIT"),
+        "artifacts/licenses/dlmalloc.txt",
+        "CC0-1.0 AND MIT",
+      ]);
+    }
     licensed.push([
       join(vendorRoot, "unicode", "LICENSE"),
       "artifacts/licenses/unicode.txt",

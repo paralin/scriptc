@@ -94,6 +94,14 @@ The only modification to upstream files: `#include "private/x.h"` flattened to `
 
 The unit compiles only into programs that use asymmetric keys and name Ed25519 in a string literal (the `ed25519` runtime feature); other binaries never compile or link any of this.
 
+## dlmalloc/
+
+- Project: https://github.com/WebAssembly/wasi-libc, file `dlmalloc/src/malloc.c`
+- Tag: wasi-sdk-27, commit 3f7eb4c7d6ede4dde3c4bffa6ed14e8d656fe93f
+- License: dlmalloc 2.8.6 is public domain (CC0 1.0); wasi-libc's patches, marked `__wasilibc_unmodified_upstream`, are used under MIT (see dlmalloc/LICENSE-MIT)
+
+Doug Lea's malloc as wasi-libc ships it, the default allocator of wasi-sdk and Emscripten programs. `src/scr_wasm_malloc.c` includes it with wasi-libc's configuration (`dlmalloc/src/dlmalloc.c`: no mmap, sbrk only, no trimming, 16-byte alignment) and every function static, and defines the malloc family of wasm32-wasi executables over it, so that the allocator does not change with the zig that links the program. The file is unmodified; to update, re-fetch it at the new tag and check the configuration macros it reads.
+
 ## ICU (fetched, not vendored)
 
 - Project: https://github.com/unicode-org/icu
