@@ -239,6 +239,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // musl deliberately has no libc-identification predefine; resolveCc's
   // SCR_MUSL flag and this target-selected TU travel together.
   unit((u) => isMuslTarget(u.driver), "scr_musl.c"),
+  // wasm32-wasi links its own malloc (dlmalloc), not the linking zig's.
+  unit((u) => targetPlatform(u.driver) === "wasi", "scr_wasm_malloc.c"),
   // scr_glob.c (path.matchesGlob) compiles its segments through the
   // regex unit, scr_idna.c (node:url's IDNA) normalizes through it and
   // scr_path_win32_relative.c lowercases through its case mapping, so all
