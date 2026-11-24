@@ -675,8 +675,15 @@ ScrStr *scr_jb_finish(ScrJsonBuf *b) {
   s->data[b->len] = '\0';
   /* Remember the size class for the next buffer (bounded so one giant
    * document cannot pin big allocations forever). */
+  if (s->cap > scr_jb_hint) s = scr_jb_hint_grow(s);
+  /* The text outlives the buffer, so it gives back what it does not use:
+   * after one large document the hint starts every buffer large, and a
+   * program that keeps many short results would otherwise hold a block of
+   * the hint's size behind each one. Shrinking splits the block in place
+   * under dlmalloc and most system allocators, so the hint still saves the
+   * doubling. Half full is the most growth by doubling leaves. */
+  if (s->cap / 2 > b->len) s = scr_str_regrow(s, b->len);
   scr_jb_init(b);
-  if (s->cap > scr_jb_hint) return scr_jb_hint_grow(s);
   return s;
 }
 
