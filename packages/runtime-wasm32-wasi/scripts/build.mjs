@@ -4,7 +4,8 @@ process.env.SCRIPTC_RUNTIME_PACK_ROOT = dirname(dirname(fileURLToPath(import.met
 process.env.SCRIPTC_RUNTIME_PACK_CONFIG = JSON.stringify({
   platform: "wasi",
   // AbortSignal is portable here and dispatches through the EventTarget unit.
-  extraRuntimeSources: ["scr_abort.c", "scr_event_target.c"],
+  // scr_wasm_malloc.c fixes the allocator, which the linking zig would choose.
+  extraRuntimeSources: ["scr_abort.c", "scr_event_target.c", "scr_wasm_malloc.c"],
   runtimeDefines: ["_GNU_SOURCE", "_WASI_EMULATED_SIGNAL", "_WASI_EMULATED_PROCESS_CLOCKS"],
   omitRuntimeSources: ["scr_child.c"],
   omitOptionalSources: [
