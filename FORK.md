@@ -23,6 +23,7 @@ fork's GitHub releases until upstream ships the fixes.
 | `tuple-element-compound-assignment` | Compound assignment to a tuple element compiles        | open     |
 | `untyped-let-hole-read`             | An untyped `let` read before assignment is `undefined` | open     |
 | `wasm-malloc`                       | wasm32-wasi programs link dlmalloc as `malloc`         | not sent |
+| `json-finish-fit`                   | A finished JSON string gives back its unused buffer    | not sent |
 
 Upstream fixed generic class methods (#1), union checks on optional class
 fields (#2) and references across dynamic calls (#8) on its own, so the fork no

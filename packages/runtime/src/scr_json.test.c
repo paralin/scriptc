@@ -1820,8 +1820,26 @@ static void stream_ref_member_questions(void) {
   assert(!scr_exc_pending());
 }
 
+/* A short document written after a long one fits its text: the buffer
+ * starts at the long one's size, and a kept result must not hold it. */
+static void json_short_after_long(void) {
+  static char fill[12000];
+  memset(fill, 'a', sizeof fill);
+  ScrJsonBuf buffer;
+  scr_jb_init(&buffer);
+  scr_jb_write(&buffer, fill, sizeof fill);
+  scr_str_release(scr_jb_finish(&buffer));
+  scr_jb_init(&buffer);
+  scr_jb_write(&buffer, "{\"id\":\"1e\"}", 11);
+  ScrStr *text = scr_jb_finish(&buffer);
+  assert(text->len == 11 && memcmp(text->data, "{\"id\":\"1e\"}", 11) == 0 && text->data[11] == '\0');
+  assert(text->cap < 2 * text->len + 2);
+  scr_str_release(text);
+}
+
 int main(void) {
   json_string_boundaries();
+  json_short_after_long();
   record_frozen_bit();
   json_indent_ownership();
   scr_init();
