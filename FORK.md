@@ -28,6 +28,8 @@ fork's GitHub releases until upstream ships the fixes.
 | `logical-typeof-guards`             | Typeof guards narrow short-circuit operands            | not sent |
 | `optional-chain-checker-arms`       | Optional chains project their guarded receiver type    | not sent |
 | `wasi-library-sync-generators`      | WASI libraries accept synchronous generators           | not sent |
+| `unknown-field-presence`            | An unknown-valued field keeps its undefined payload    | not sent |
+| `discriminated-record-exact-arm`    | Empty oneof payloads retain their discriminator tags   | not sent |
 
 The fork now builds on upstream 0.4.16. That release also fixes union results
 whose payload is undefined and JSON.stringify of recursive UI element trees.
