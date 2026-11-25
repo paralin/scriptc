@@ -25,6 +25,12 @@ fork's GitHub releases until upstream ships the fixes.
 | `wasm-malloc`                       | wasm32-wasi programs link dlmalloc as `malloc`         | not sent |
 | `json-finish-fit`                   | A finished JSON string gives back its unused buffer    | not sent |
 | `json-test-context`                 | The JSON runtime test links scr_context.c              | not sent |
+| `logical-typeof-guards`             | Typeof guards narrow short-circuit operands            | not sent |
+| `optional-chain-checker-arms`       | Optional chains project their guarded receiver type    | not sent |
+| `wasi-library-sync-generators`      | WASI libraries accept synchronous generators           | not sent |
+
+The fork now builds on upstream 0.4.16. That release also fixes union results
+whose payload is undefined and JSON.stringify of recursive UI element trees.
 
 Upstream fixed generic class methods (#1), union checks on optional class
 fields (#2) and references across dynamic calls (#8) on its own, so the fork no
