@@ -30,6 +30,7 @@ fork's GitHub releases until upstream ships the fixes.
 | `wasi-library-sync-generators`      | WASI libraries accept synchronous generators           | not sent |
 | `unknown-field-presence`            | An unknown-valued field keeps its undefined payload    | not sent |
 | `discriminated-record-exact-arm`    | Empty oneof payloads retain their discriminator tags   | not sent |
+| `linked-source-json`               | JSON preserves retained class fields and omitted roots | not sent |
 
 The fork now builds on upstream 0.4.16. That release also fixes union results
 whose payload is undefined and JSON.stringify of recursive UI element trees.
