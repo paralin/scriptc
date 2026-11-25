@@ -38,7 +38,7 @@ import { keyedHelperName } from "./stable-names.js";
 import type { Lowerer } from "./lowerer.js";
 import { recordHasOwnHelper, recordKeysArrayCall } from "./lower-calls.js";
 import { callOwn, callOwnOrBuiltin } from "./record-inherited.js";
-import { recordMayKeepSource } from "./record-sources.js";
+import { hasRecordSourceProducer, recordMayKeepSource } from "./record-sources.js";
 import { inspectHelperCall } from "./lower-inspect.js";
 import type { FunctionCensus } from "./function-census.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -241,6 +241,7 @@ export function finalizeRecordLinks(
   lowerer: Lowerer,
   functions: IrFunction[],
   census: FunctionCensus,
+  library: boolean,
 ): void {
   // A finalizer may be the only work (a width copy that can read a target
   // field off its source's kept view, record-sources.ts).
@@ -252,14 +253,23 @@ export function finalizeRecordLinks(
   )
     return;
   const lifted = lowerer.liftedFns.length;
-  const scan = scanModule(lowerer, [...functions, ...lowerer.liftedFns]);
+  const bodies = [...functions, ...lowerer.liftedFns];
+  const scan = scanModule(lowerer, bodies);
   const sourced = scan.sourced;
-  keepObservedLinks(lowerer, scan.exposed, [...functions, ...lowerer.liftedFns]);
+
+  // Only a whole program can rule out a first source. A library's callers
+  // can supply records whose sources were created outside these bodies.
+  if (!library && sourced.size > 0 && !hasRecordSourceProducer(lowerer, bodies)) sourced.clear();
+
+  // Keep the links that the completed reflective surfaces observe.
+  keepObservedLinks(lowerer, scan.exposed, bodies);
   for (const site of lowerer.recordLinkSites)
     if (lowerer.recordLinks.has(`${site.link.from}:${site.link.to}`))
       linkCopies(site.projection, site.link);
   for (const link of lowerer.recordLinks.values()) addComposer(lowerer, link, sourced);
   refuseShadowedMethodCalls(lowerer);
+
+  // Complete helpers over the retained physical source graph.
   const answering = new Set<string>();
   for (let i = 0; i < lowerer.linkedHelpers.length; i++) {
     const helper = lowerer.linkedHelpers[i]!;
@@ -279,7 +289,10 @@ export function finalizeRecordLinks(
     )
       answering.add(helper.fn.name);
   }
+
+  // Finish operations that depend on the completed source facts.
   for (const finalize of lowerer.linkedHelperFinalizers) finalize(sourced);
+
   // The module's functions already hold the helpers lifted before.
   functions.push(...lowerer.liftedFns.slice(lifted));
   restoreStringConversions(lowerer, functions, answering);
