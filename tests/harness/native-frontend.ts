@@ -12,11 +12,15 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, expect } from "vitest";
 import { compileC, deserializeModule, emitLlvmModule, validateModule } from "@scriptc/compiler";
-import type { compile } from "@scriptc/compiler";
+import type { CompileResult } from "@scriptc/compiler";
 import type { IrModule } from "../../packages/compiler/src/ir/ir.js";
 import { ts7Executable } from "../../packages/compiler/src/frontend/ts7/rpc-api.js";
 
 import { moduleLinkFeatures } from "./link-features.js";
+
+type BuildReceipt =
+  | Pick<Extract<CompileResult, { ok: true }>, "ok" | "binaryPath" | "backend">
+  | Pick<Extract<CompileResult, { ok: false }>, "ok" | "diagnostics">;
 
 const root = join(import.meta.dirname, "../..");
 const entry = join(root, "tests/fixtures/self-hosting/frontend-pipeline.ts");
@@ -122,6 +126,10 @@ export function useNativeFrontend(backend: "llvm" = "llvm"): () => NativeFronten
     // Production lowering can monopolize a worker's synchronous RPC loop.
     // Build the actual entry in a child while keeping Vitest responsive.
     const api = pathToFileURL(join(root, "packages/compiler/src/index.ts")).href;
+    // The parent consumes only build status and paths. Use the same private
+    // file transport as IR so complete failure diagnostics cannot overflow
+    // the child's stdout buffer, and do not copy unused warning payloads.
+    const buildReceipt = join(dir, "build-result.json");
     const { stdout, stderr } = await execFileAsync(
       process.execPath,
       [
@@ -130,19 +138,24 @@ export function useNativeFrontend(backend: "llvm" = "llvm"): () => NativeFronten
         "tsx",
         "--input-type=module",
         "--eval",
-        `import { compile } from ${JSON.stringify(api)};
+        `import { writeFileSync } from 'node:fs';
+         import { compile } from ${JSON.stringify(api)};
          const result = await compile(process.argv[1], {
            outDir: process.argv[2], outPath: process.argv[3], backend: process.argv[4],
            optimization: 'dev', sanitize: process.argv[5] === '1',
            ffiProfilePath: process.argv[6],
          });
-         console.log(JSON.stringify({ ...result, sourceTexts: undefined }));`,
+         const receipt = result.ok
+           ? { ok: true, binaryPath: result.binaryPath, backend: result.backend }
+           : { ok: false, diagnostics: result.diagnostics };
+         writeFileSync(process.argv[7], JSON.stringify(receipt));`,
         entry,
         dir,
         executable("frontend"),
         backend,
         sanitize ? "1" : "0",
         profile,
+        buildReceipt,
       ],
       // Under the sanitizer this compile alone can take most of 15 minutes
       // on a loaded macOS runner. Linux CI's whole step now runs within a
@@ -150,8 +163,9 @@ export function useNativeFrontend(backend: "llvm" = "llvm"): () => NativeFronten
       // room for a slower runner.
       { cwd: root, timeout: 1_800_000, maxBuffer: 16 * 1024 * 1024 },
     );
+    expect(stdout).toBe("");
     expect(stderr).toBe("");
-    const built = JSON.parse(stdout) as Awaited<ReturnType<typeof compile>>;
+    const built = JSON.parse(readFileSync(buildReceipt, "utf8")) as BuildReceipt;
     if (!built.ok)
       throw new Error(built.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     if (!("binaryPath" in built)) throw new Error("expected a native frontend executable");
