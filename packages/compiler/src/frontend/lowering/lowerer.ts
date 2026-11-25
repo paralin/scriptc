@@ -15514,7 +15514,9 @@ export class Lowerer {
     // another union's arm, where the program can tell the copy from the
     // object is refused while a module can still fail.
     this.timedPass("refuseObservedCopies", () => refuseObservedCopies(this, functions));
-    this.timedPass("finalizeRecordLinks", () => finalizeRecordLinks(this, functions, census));
+    this.timedPass("finalizeRecordLinks", () =>
+      finalizeRecordLinks(this, functions, census, library),
+    );
     this.timedPass("finalizeGeneratorArrays", () => finalizeGeneratorArrays(this, functions));
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
@@ -15714,10 +15716,7 @@ export class Lowerer {
       // is read from the final bodies, since the steps above add conversions
       // and boxes of their own. A library is not a whole program: its
       // callers hand it records too.
-      const folded =
-        library || this.recordSourcesPossible
-          ? null
-          : foldRecordSourceTests(this, module.functions);
+      const folded = library ? null : foldRecordSourceTests(this, module.functions);
       if (folded !== null) {
         module.recordSourcesFolded = folded;
         module.functions = withoutUnreachedFunctions(module, lifted).functions;
