@@ -93,15 +93,21 @@ export interface NativeFrontend {
 /** Builds the native frontend in a beforeAll hook of the calling suite (and removes it afterwards). The
  * returned function gives the built frontend to the suite's tests. */
 export function useNativeFrontend(backend: "llvm" = "llvm"): () => NativeFrontend {
+  // Retain the frontend and its scratch directory for the calling suite.
   let frontend: NativeFrontend | undefined;
   let directory: string | undefined;
+
+  // Build the native frontend once for all checks in this suite.
   beforeAll(async () => {
+    // Reserve the executable paths in a private build directory.
     const dir = mkdtempSync(
       join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-native-frontend-"),
     );
     directory = dir;
     const executable = (name: string) =>
       join(dir, name + (process.platform === "win32" ? ".exe" : ""));
+
+    // Compile the TS7 process bindings and describe them to the compiler.
     const nativeSources = join(root, "packages/compiler/native");
     const object = join(dir, "ts7-process.o");
     execFileSync("clang", [
@@ -123,9 +129,11 @@ export function useNativeFrontend(backend: "llvm" = "llvm"): () => NativeFronten
         libraries: [object],
       }),
     );
+
     // Production lowering can monopolize a worker's synchronous RPC loop.
     // Build the actual entry in a child while keeping Vitest responsive.
     const api = pathToFileURL(join(root, "packages/compiler/src/index.ts")).href;
+
     // The parent consumes only build status and paths. Use the same private
     // file transport as IR so complete failure diagnostics cannot overflow
     // the child's stdout buffer, and do not copy unused warning payloads.
@@ -139,7 +147,8 @@ export function useNativeFrontend(backend: "llvm" = "llvm"): () => NativeFronten
         "--input-type=module",
         "--eval",
         `import { writeFileSync } from 'node:fs';
-         import { compile } from ${JSON.stringify(api)};
+         import { collectGarbageUnderHeapPressure, compile } from ${JSON.stringify(api)};
+         collectGarbageUnderHeapPressure();
          const result = await compile(process.argv[1], {
            outDir: process.argv[2], outPath: process.argv[3], backend: process.argv[4],
            optimization: 'dev', sanitize: process.argv[5] === '1',
@@ -171,32 +180,41 @@ export function useNativeFrontend(backend: "llvm" = "llvm"): () => NativeFronten
     if (!("binaryPath" in built)) throw new Error("expected a native frontend executable");
     expect(built.backend).toBe(backend);
 
+    // Compare each lowering request against the Node reference pipeline.
     const lowerRequest = (
       file: string,
       request: LowerRequest,
     ): { module: IrModule | null; report: unknown[] } => {
+      // Stage the request and clear the two previous lowering results.
       const requestPath = join(dir, "request.json");
       writeFileSync(requestPath, JSON.stringify(request));
       const expectedPath = join(dir, "node.json");
       const actualPath = join(dir, "native.json");
       for (const output of [expectedPath, actualPath]) rmSync(output, { force: true });
+
+      // Lower the request with the Node reference pipeline.
       const expected = spawnSync(
         process.execPath,
         ["--import", "tsx", oracle, ts7Executable(), requestPath, expectedPath],
         runOptions,
       );
+
       // The native client launches the selected TS7 executable directly.
       // Removing PATH makes an accidental Node subprocess dependency fail.
       const actual = spawnSync(built.binaryPath, [ts7Executable(), requestPath, actualPath], {
         ...runOptions,
         env: { ...process.env, PATH: "" },
       });
+
+      // Both processes must complete without diagnostics on stderr.
       for (const result of [expected, actual]) {
         expect(result.error, file + "\n" + result.stderr).toBeUndefined();
         expect(result.signal, file + "\n" + result.stderr).toBeNull();
         expect(result.status, file + "\n" + result.stderr).toBe(0);
         expect(comparableStderr(result.stderr), file).toBe("");
       }
+
+      // Compare reports before reading the optional IR outputs.
       const expectedReport = expected.stdout
         .trim()
         .split("\n")
@@ -208,17 +226,25 @@ export function useNativeFrontend(backend: "llvm" = "llvm"): () => NativeFronten
       expect(actualReport, file).toEqual(expectedReport);
       expect(existsSync(actualPath), file).toBe(existsSync(expectedPath));
       if (!existsSync(actualPath)) return { module: null, report: actualReport };
+
+      // Require identical, valid IR when lowering produced a module.
       const module = deserializeModule(readFileSync(actualPath, "utf8"));
       expect(module, file).toEqual(deserializeModule(readFileSync(expectedPath, "utf8")));
       expect(validateModule(module), file).toEqual([]);
 
       return { module, report: actualReport };
     };
+
+    // Publish the completed frontend to the suite checks.
     frontend = { directory: dir, executable, lowerRequest };
   }, 1_800_000);
+
+  // Release this suite's scratch files after its checks finish.
   afterAll(() => {
     if (directory !== undefined) rmSync(directory, { recursive: true, force: true });
   });
+
+  // Refuse access until the build hook has published the frontend.
   return () => {
     if (frontend === undefined) throw new Error("the native frontend was not built");
     return frontend;
@@ -227,10 +253,13 @@ export function useNativeFrontend(backend: "llvm" = "llvm"): () => NativeFronten
 
 /** A corpus program lowered by the native frontend compiles and prints what Node prints. */
 export async function checkProgram(frontend: NativeFrontend, file: string): Promise<void> {
+  // Lower the corpus source and require an IR module.
   const source = join(root, "tests/corpus", file);
   const { module, report } = frontend.lowerRequest(file, { entry: source });
   expect(report[0], file).toEqual({ preflight: [], npmStatic: [] });
   if (!module) throw new Error(file + ": missing native IR");
+
+  // Compile the emitted LLVM with the module's native link requirements.
   const cPath = join(frontend.directory, "program.ll");
   writeFileSync(cPath, emitLlvmModule(module));
   await compileC({
@@ -239,6 +268,8 @@ export async function checkProgram(frontend: NativeFrontend, file: string): Prom
     sanitize,
     ...moduleLinkFeatures(module),
   });
+
+  // Compare the compiled executable's output and status with Node.
   const node = spawnSync(process.execPath, [source], runOptions);
   const native = spawnSync(frontend.executable("program"), [], runOptions);
   for (const result of [node, native]) {
@@ -305,6 +336,7 @@ function project(frontend: NativeFrontend): string {
 
 /** A type error and a static refusal produce the Node pipeline's diagnostics and no IR. */
 export function checkDiagnostics(frontend: NativeFrontend): void {
+  // A TypeScript error must stop lowering before IR is emitted.
   const source = project(frontend);
   writeFileSync(source, "const value: string = 1; console.log(value);\n");
   const badType = frontend.lowerRequest("type error", { entry: source });
@@ -312,6 +344,8 @@ export function checkDiagnostics(frontend: NativeFrontend): void {
   expect(badType.report[0]).toMatchObject({
     preflight: [expect.objectContaining({ code: "SC0001" })],
   });
+
+  // A static refusal must likewise report its diagnostic without IR.
   writeFileSync(
     source,
     `
@@ -329,6 +363,7 @@ export function checkDiagnostics(frontend: NativeFrontend): void {
 /** The same production pipeline supplies the library's syntax contract. Local type names and convention
  * constants exercise its scoped cache and the heterogeneous destination fields used by the projection. */
 export function checkLibraryContract(frontend: NativeFrontend): void {
+  // Stage a library whose scoped types and conventions affect its contract.
   const source = project(frontend);
   writeFileSync(
     source,
@@ -345,6 +380,8 @@ export function checkLibraryContract(frontend: NativeFrontend): void {
         export function count(value: Model): number { return value.alpha.length; }
       `,
   );
+
+  // Compare the extracted library contract with the authored declarations.
   const contract = frontend.lowerRequest("library contract", {
     entry: source,
     npmStatic: "lib",
@@ -368,6 +405,7 @@ export function checkLibraryContract(frontend: NativeFrontend): void {
 
 /** A declared native function bound through an FFI profile lowers, links and runs. */
 export async function checkNativeBindings(frontend: NativeFrontend): Promise<void> {
+  // Declare the native binding and lower it through its FFI profile.
   const source = project(frontend);
   const directory = join(source, "..");
   writeFileSync(
@@ -390,6 +428,8 @@ export async function checkNativeBindings(frontend: NativeFrontend): Promise<voi
   });
   expect(ffiResult.report[1]).toMatchObject({ diagnostics: [], validation: [] });
   if (!ffiResult.module) throw new Error("missing FFI IR");
+
+  // Compile the implementation and link it to the lowered FFI caller.
   const helper = join(directory, "add.c");
   const helperObject = join(directory, "add.o");
   writeFileSync(helper, "double native_add(double a, double b) { return a + b; }\n");
@@ -404,6 +444,8 @@ export async function checkNativeBindings(frontend: NativeFrontend): Promise<voi
     inspect: true,
     linkInputs: [helperObject],
   });
+
+  // Run the bound call and require the native implementation's result.
   const ffiRun = spawnSync(frontend.executable("ffi"), [], runOptions);
   expect(ffiRun.error).toBeUndefined();
   expect(ffiRun.status, ffiRun.stderr).toBe(0);
