@@ -94,10 +94,10 @@ jobs:
           mv "$RUNNER_TEMP/${{ matrix.llvm_asset }}" "$RUNNER_TEMP/llvm-22.1.8"
           echo "LLVM_DIR=$RUNNER_TEMP/llvm-22.1.8/lib/cmake/llvm" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/llvm-22.1.8/bin" >> "$GITHUB_PATH"
-      - uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
+      - name: Install pinned Zig
         if: matrix.use_zig == true
-        with:
-          version: 0.16.0
+        uses: ./.github/actions/zig
+        timeout-minutes: 20
       # The archive is checked against its pinned digest (scripts/toolchain.sha256) before anything unpacks it.
       - name: Download pinned LLVM development distribution (Windows)
         if: matrix.platform == 'windows-x64'
