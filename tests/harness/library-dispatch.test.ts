@@ -53,25 +53,66 @@ test.for(modes)(
       );
       let actual: { stdout: string; stderr: string; status: number | null };
       if (mode === "wasm-dev") {
-        const wasi = new WASI({ version: "preview1" });
-        const instance = new WebAssembly.Instance(
-          new WebAssembly.Module(await readFile(result.archivePath)),
-          {
-            ...wasi.getImportObject(),
-            scriptc: {
-              panic() {
-                throw new Error("unexpected panic");
-              },
-            },
-          },
-        );
-        wasi.initialize(instance);
-        (instance.exports.app_init as Function)();
+        const exports = await wasmLibrary(result.archivePath);
+        (exports.app_init as Function)();
         actual = {
-          stdout: `${(instance.exports.app_dispatch as Function)()}\n`,
+          stdout: `${(exports.app_dispatch as Function)()}\n`,
           stderr: "",
           status: 0,
         };
+
+        // A generator's frame survives the result arena's reset on each
+        // exported call; completion and explicit return run finally once.
+        const generator = join(directory, "generator.ts");
+        await writeFile(
+          generator,
+          `
+          let starts = 0, finishes = 0;
+          function* steps(): Generator<number, number, unknown> {
+            starts++;
+            try { yield 1; yield* [2]; return 3; }
+            finally { finishes++; }
+          }
+          const work = steps();
+          export function step(): number {
+            const result = work.next();
+            return (result.value ?? 0) + 100 * finishes;
+          }
+          export function cancel(): number {
+            const before = starts;
+            const unopened = steps();
+            void unopened;
+            const iterator = steps();
+            iterator.next();
+            const result = iterator.return(9);
+            return starts === before + 1 && finishes === 2 && result.done && result.value === 9 ? 1 : 0;
+          }
+        `,
+        );
+        await writeFile(
+          profilePath,
+          JSON.stringify({
+            profile_format: 1,
+            name: "sync-generator",
+            entry: generator,
+            emission: "llvm",
+            abi: { prefix: "app_", init_symbol: "app_init", sink_register_symbol: "app_sink" },
+            exports: ["step", "cancel"].map((name) => ({
+              export: name,
+              symbol: `app_${name}`,
+              params: [],
+              returns: "f64",
+            })),
+          }),
+        );
+        const built = await compileLibrary({ profilePath, outDir: join(directory, "generator") });
+        if (!built.ok) throw new Error(JSON.stringify(built.diagnostics));
+        const resumed = await wasmLibrary(built.archivePath);
+        (resumed.app_init as Function)();
+        expect(Array.from({ length: 4 }, () => (resumed.app_step as Function)())).toEqual([
+          1, 2, 103, 100,
+        ]);
+        expect((resumed.app_cancel as Function)()).toBe(1);
       } else {
         const probe = join(directory, "probe.c"),
           binary = join(directory, "probe");
@@ -106,3 +147,18 @@ test.for(modes)(
     }
   },
 );
+
+/** wasmLibrary initializes a reactor with the real WASI imports and a panic sink. */
+async function wasmLibrary(path: string): Promise<WebAssembly.Exports> {
+  const wasi = new WASI({ version: "preview1" });
+  const instance = new WebAssembly.Instance(new WebAssembly.Module(await readFile(path)), {
+    ...wasi.getImportObject(),
+    scriptc: {
+      panic() {
+        throw new Error("unexpected panic");
+      },
+    },
+  });
+  wasi.initialize(instance);
+  return instance.exports;
+}
