@@ -34,6 +34,7 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     ...(options.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(options.dynTier === true ? { dynTier: true } : {}),
     ...(options.recordSourceGet === true ? { recordSourceGet: true } : {}),
+    ...(options.declAdopt === true ? { declAdopt: true } : {}),
     ...(options.arrJoinStr === true ? { arrJoinStr: true } : {}),
     // A program that resizes, grows or detaches a buffer names the views
     // registry's arming entry point, so the archive must carry the unit and
@@ -63,7 +64,7 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     dnsPromises: false,
     dnsResolve: false,
     dgramDyn: false,
-    textCodecDyn: false,
+    textCodecDyn: options.textCodecDyn ?? false,
     watch: false,
     watchFile: false,
     watchEvents: false,

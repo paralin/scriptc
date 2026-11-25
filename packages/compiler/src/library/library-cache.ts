@@ -44,21 +44,7 @@ interface EarlyLibraryCacheStamp {
     semanticIr: CachedLibraryFile | null;
     sources: CachedLibraryFile | null;
   };
-  native: {
-    backend: "llvm";
-    regex: boolean;
-    assert: boolean;
-    inspect: boolean;
-    symbol: boolean;
-    bigint: boolean;
-    searchParams: boolean;
-    emitter: boolean;
-    zlib: boolean;
-    x509: boolean;
-    copying: boolean;
-    textDecoderLegacy: boolean;
-    bigintBytes: boolean;
-  };
+  native: EarlyLibraryNativeFeatures;
   integrity: string;
 }
 
@@ -79,6 +65,10 @@ export interface EarlyLibraryNativeFeatures {
   x509: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  /** Codec records cross checked-dynamic slots through scr_text_codec_dyn.c. */
+  textCodecDyn: boolean;
+  /** Checked shared values keep their declaration-boundary adoption unit. */
+  declAdopt: boolean;
   bigintBytes: boolean;
   /** The kept-source read of a record-to-record conversion
    * (scr_record_source_get.c). Absent (false) otherwise. */
@@ -154,6 +144,8 @@ const BOOLEAN_NATIVE_KEYS = [
   "x509",
   "copying",
   "textDecoderLegacy",
+  "textCodecDyn",
+  "declAdopt",
   "bigintBytes",
   "mutableBuffers",
   "fnMemberProps",
