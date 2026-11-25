@@ -1877,6 +1877,22 @@ export function runtimeOptionalGuardIds(
       const unequal =
         op === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
         op === ts.SyntaxKind.ExclamationEqualsToken;
+      // A typeof comparison proves presence when its selected result
+      // excludes the undefined kind. Keep the checker's narrower arm for
+      // the guarded read, including in a short-circuit operand.
+      if (outcome !== null && (equal || unequal)) {
+        const matches = equal === outcome;
+        const typeofPresent = (value: ts.Expression, kind: ts.Expression): void => {
+          while (ts.isParenthesizedExpression(value)) value = value.expression;
+          if (!ts.isTypeOfExpression(value) || !ts.isStringLiteral(kind)) return;
+          const defined = ["bigint", "boolean", "function", "number", "object", "string", "symbol"];
+          if (!(matches ? defined.includes(kind.text) : kind.text === "undefined")) return;
+          const local = runtimeOptionalLocalOf(lowerer, value.expression);
+          if (local !== null) candidates.push(local);
+        };
+        typeofPresent(expr.left, expr.right);
+        typeofPresent(expr.right, expr.left);
+      }
       if ((equal && outcome === false) || (unequal && outcome === true)) {
         const present = (value: ts.Expression, unit: ts.Expression): void => {
           while (ts.isParenthesizedExpression(unit)) unit = unit.expression;

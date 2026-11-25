@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/short-circuit-typeof-optional.ts"
+ ],
+ "diags": []
+}
