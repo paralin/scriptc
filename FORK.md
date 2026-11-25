@@ -26,10 +26,11 @@ fork's GitHub releases until upstream ships the fixes.
 | `json-finish-fit`                   | A finished JSON string gives back its unused buffer    | not sent |
 | `json-test-context`                 | The JSON runtime test links scr_context.c              | not sent |
 | `logical-typeof-guards`             | Typeof guards narrow short-circuit operands            | not sent |
-| `optional-chain-checker-arms`       | Optional chains project their guarded receiver type    | not sent |
+| `optional-chain-checker-arms`       | Optional chains preserve stable and changing receiver arms    | not sent |
 | `wasi-library-sync-generators`      | WASI libraries accept synchronous generators           | not sent |
 | `unknown-field-presence`            | An unknown-valued field keeps its undefined payload    | not sent |
 | `discriminated-record-exact-arm`    | Empty oneof payloads retain their discriminator tags   | not sent |
+| `guarded-char-unit-locals`         | Guarded optional characters keep code-unit comparisons | not sent |
 | `linked-source-json`               | JSON preserves retained class fields and omitted roots | not sent |
 
 The fork now builds on upstream 0.4.16. That release also fixes union results
