@@ -9,11 +9,20 @@ import * as net from "node:net";
 const events: string[] = [];
 const serverEvents: string[] = [];
 let serverSockets = 0;
+let chunkReads = 0;
+function chunk(value: unknown): string {
+  chunkReads++;
+  return JSON.stringify(value);
+}
+function nullChunk(): string | null {
+  chunkReads++;
+  return null;
+}
 const server = net.createServer((sock) => {
   sock.setEncoding("utf8");
   sock.on("data", (d: string) => {
     serverEvents.push(`server data ${typeof d} ${d}`);
-    sock.end("pong", () => serverEvents.push("server end callback"));
+    sock.end(chunk("pong"), () => serverEvents.push("server end callback"));
   });
   // the first connection's server side (the timeout connection's close
   // order against the client's depends on the event loop phase)
@@ -32,19 +41,32 @@ function attempt(label: string, f: () => void): void {
   }
 }
 
+// Invalid chunks must throw before any write callback is registered.
+function attemptWrite(write: () => void): void {
+  try {
+    write();
+    events.push("invalid write accepted");
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    events.push(`invalid chunk ${e.name} ${e.code}`);
+  }
+}
+
 server.listen(0, "127.0.0.1", () => {
   const port = (server.address() as net.AddressInfo).port;
   const c = net.connect(port, "127.0.0.1");
   c.on("connect", () => {
     events.push("connect");
-    c.write("ping", (err?: Error | null) => events.push(`write callback ${err === null}`));
+    attemptWrite(() => c.write(chunk(undefined)));
+    attemptWrite(() => c.write(chunk(undefined), () => events.push("invalid callback ran")));
+    c.write(chunk("ping"), (err?: Error | null) => events.push(`write callback ${err === null}`));
     events.push(`setKeepAlive chains ${c.setKeepAlive(true, 1000) === c}`);
   });
   c.on("ready", () => events.push("ready"));
   c.on("data", (d: Buffer) => events.push(`client data ${d.toString()}`));
   c.on("end", () => {
     events.push("client end");
-    c.end(() => events.push("client end callback"));
+    c.end(chunk(undefined), () => events.push("client end callback"));
   });
   c.on("close", (hadError: boolean) => {
     events.push(`client close ${hadError}`);
@@ -63,9 +85,16 @@ server.listen(0, "127.0.0.1", () => {
     t.on("timeout", () => events.push("timeout event"));
     t.on("close", (hadError: boolean) => {
       events.push(`t close ${hadError}`);
-      server.close(() => {
-        console.log(serverEvents.join("\n"));
-        console.log(events.join("\n"));
+      const absent = net.connect(port, "127.0.0.1", () => {
+        // @ts-expect-error Node accepts null as an absent end chunk.
+        absent.end(nullChunk());
+      });
+      absent.on("close", () => {
+        server.close(() => {
+          console.log(serverEvents.join("\n"));
+          console.log(events.join("\n"));
+          console.log("chunk evaluations", chunkReads);
+        });
       });
     });
   });
