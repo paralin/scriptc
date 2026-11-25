@@ -46,6 +46,9 @@ import {
 } from "../../../ir/ir.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import {
+  aliasTypeofNarrows,
+  runtimeOptionalGuardIds,
+  withRuntimeOptionalNarrowed,
   bigintCompoundValue,
   compoundUnsupported,
   concatOperand,
@@ -3800,9 +3803,17 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
   }
   if (left.kind === "unitLit" && op === ts.SyntaxKind.AmpersandAmpersandToken) return left;
   if (op === ts.SyntaxKind.BarBarToken && REF_TRUTHY_KINDS.has(left.type.kind)) return left;
-  let right =
-    (left.type.kind === "dyn" ? dynamicArrayOperand(lowerer, expr.right, expr) : null) ??
-    lowerer.lowerExpr(expr.right);
+  let right = lowerer.narrowingAliases(
+    aliasTypeofNarrows(lowerer, expr.left, op === ts.SyntaxKind.AmpersandAmpersandToken),
+    () =>
+      withRuntimeOptionalNarrowed(
+        lowerer,
+        runtimeOptionalGuardIds(lowerer, expr.left, op === ts.SyntaxKind.AmpersandAmpersandToken),
+        () =>
+          (left.type.kind === "dyn" ? dynamicArrayOperand(lowerer, expr.right, expr) : null) ??
+          lowerer.lowerExpr(expr.right),
+      ),
+  );
   // `logger || console` over an optional record: console flows into the
   // record the left operand holds (console-records.ts), so the pair stays
   // typed, as the checker's own result type is.

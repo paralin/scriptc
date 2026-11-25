@@ -134,6 +134,8 @@ import { lowerIdentifierExpr } from "./expressions/identifiers.js";
 import { lowerFieldCompoundValue, lowerIncDec } from "./expressions/updates.js";
 import {
   lowerTernary,
+  runtimeOptionalGuardIds,
+  withRuntimeOptionalNarrowed,
   noteStrandedInstanceRead,
   staleReadMessage,
 } from "./expressions/narrowing.js";
@@ -2236,16 +2238,11 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       // (true for &&, false for ||) — aliased-typeof narrows the left
       // PROVES under that polarity hold while it lowers (`type ===
       // 'string' && val.length > 0`, the ms entry shape).
-      const runtimeOptionalLocal = isAnd ? runtimeOptionalLocalOf(lowerer, e.left) : null;
-      const right = lowerer.narrowingAliases(aliasTypeofNarrows(lowerer, e.left, isAnd), () => {
-        if (runtimeOptionalLocal === null) return lowerer.lowerCondition(e.right);
-        lowerer.runtimeOptionalLocals.delete(lowerer.runtimeOptionalRootOf(runtimeOptionalLocal));
-        try {
-          return lowerer.lowerCondition(e.right);
-        } finally {
-          lowerer.runtimeOptionalLocals.add(lowerer.runtimeOptionalRootOf(runtimeOptionalLocal));
-        }
-      });
+      const right = lowerer.narrowingAliases(aliasTypeofNarrows(lowerer, e.left, isAnd), () =>
+        withRuntimeOptionalNarrowed(lowerer, runtimeOptionalGuardIds(lowerer, e.left, isAnd), () =>
+          lowerer.lowerCondition(e.right),
+        ),
+      );
       if (left.kind === "boolLit") return right;
       return {
         kind: "logical",
