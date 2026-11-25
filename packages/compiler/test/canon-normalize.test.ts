@@ -303,16 +303,19 @@ describe("canon", () => {
 });
 
 describe("mapCanonical", () => {
-  const ctx = (): TypeMapperCtx => ({
-    checker,
-    shapes: new ShapeRegistry(),
-    unions: new UnionRegistry(),
-    classNamer: (decl) => decl.name?.text ?? "anonymous",
-    isStdlibFile: (sf) => load.program.isSourceFileDefaultLibrary(sf),
-    isNpmFile: () => false,
-    isExternalTypeFile: () => false,
-    isProgramFile: (sf) => load.moduleOrder.includes(sf),
-  });
+  const ctx = (): TypeMapperCtx => {
+    const shapes = new ShapeRegistry();
+    return {
+      checker,
+      shapes,
+      unions: new UnionRegistry(shapes),
+      classNamer: (decl) => decl.name?.text ?? "anonymous",
+      isStdlibFile: (sf) => load.program.isSourceFileDefaultLibrary(sf),
+      isNpmFile: () => false,
+      isExternalTypeFile: () => false,
+      isProgramFile: (sf) => load.moduleOrder.includes(sf),
+    };
+  };
   test.for(["Normalized", "Same", "Flat", "Id", "Pair", "Gauge"])(
     "%s maps like mapType",
     (name) => {

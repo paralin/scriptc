@@ -14,7 +14,7 @@ import {
 } from "../../ir/ir.js";
 import type { Node, Program, SourceFile, Symbol, Type } from "../ts7/adapter.js";
 import { Lowerer } from "./lowerer.js";
-import { UnionRegistry } from "../type-mapper.js";
+import { ShapeRegistry, UnionRegistry } from "../type-mapper.js";
 import { classMethodValue } from "./class-method-values.js";
 
 const loc = { file: "island.ts", start: 0, end: 1 };
@@ -272,7 +272,10 @@ test("optional union widening keeps refused and missing contracts current", () =
 
   // Union ids come from their arms, so a fresh registry names the union
   // this one has not interned yet.
-  const missing: IrType = { kind: "union", unionId: new UnionRegistry().intern([F64, STRING]) };
+  const missing: IrType = {
+    kind: "union",
+    unionId: new UnionRegistry(new ShapeRegistry()).intern([F64, STRING]),
+  };
   expect(lowerer.withUndefinedArmOf(missing)).toBeNull();
   expect(lowerer.unions.intern([F64, STRING])).toBe(missing.unionId);
   expect(lowerer.withUndefinedArmOf(missing)?.kind).toBe("union");

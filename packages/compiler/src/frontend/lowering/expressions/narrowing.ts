@@ -48,7 +48,6 @@ import { builtRecordResultType } from "../built-record-results.js";
 import { dynamicArrayOperand } from "./array-literals.js";
 import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
 import { literalValues } from "../../literal-values.js";
-import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import {
@@ -1191,7 +1190,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         )
       ) {
         const values = literalValues(lowerer.checker.getTypeOfSymbol(property));
-        const arm = values && literalUnionArm(def, values, (id) => lowerer.shapes.get(id));
+        const arm = values && lowerer.literalUnionArm(def.id, values);
         if (arm) {
           const checked = checkedStaleArm(
             lowerer,

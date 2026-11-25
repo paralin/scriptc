@@ -51,6 +51,7 @@ import {
   isSupportedMapValue,
   isSupportedSetElem,
   isUnitType,
+  hasUnitOnlyDiscriminant,
   REF_TRUTHY_KINDS,
   RUNTIME_EMITTER_CLASS,
   RUNTIME_ERROR_CLASSES,
@@ -793,6 +794,8 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     }
     if (u.discriminant) {
       const { field, cases } = u.discriminant;
+      if (cases.length === 0)
+        errors.push({ message: `union ${u.id}: empty discriminant cases`, loc: noLoc });
       const tags = new Set<number>();
       const values = new Set<string>();
       for (const candidate of cases) {
@@ -846,7 +849,12 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         }
       }
       for (let tag = 0; tag < u.arms.length; tag++) {
-        if (u.arms[tag]!.kind === "record" && !tags.has(tag)) {
+        const arm = u.arms[tag]!;
+        if (
+          arm.kind === "record" &&
+          !tags.has(tag) &&
+          !hasUnitOnlyDiscriminant(recordsById.get(arm.shapeId), field, (id) => unionsById.get(id))
+        ) {
           errors.push({
             message: `union ${u.id}: missing discriminant for record arm ${tag}`,
             loc: noLoc,

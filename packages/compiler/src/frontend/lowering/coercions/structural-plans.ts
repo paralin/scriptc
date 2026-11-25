@@ -130,6 +130,7 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
               from,
               to,
               (id) => lowerer.shapes.get(id),
+              (id) => lowerer.unions.get(id),
               (s, d) => lowerer.widthLiftPlan(s, d),
               new Set(trappable),
             ) !== null
@@ -147,8 +148,31 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     if (!def) return null;
     if (tag >= 0) {
       const shape = src.kind === "record" ? lowerer.shapes.get(src.shapeId) : undefined;
-      if (shape && planRecordUnionWrap(shape, def, (id) => lowerer.shapes.get(id)))
+      if (
+        shape &&
+        planRecordUnionWrap(
+          shape,
+          def,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      )
         return { how: "discriminantWrap" };
+      // An empty-interface payload is dynamic. A record can therefore have
+      // one arm's exact layout while its explicit discriminant names another
+      // arm reached by a checked payload conversion. Layout cannot select
+      // the semantic variant when more than one such route exists.
+      if (shape) {
+        const route = planRecordUnionLift(
+          shape,
+          def,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+          (from, to) => lowerer.widthLiftPlan(from, to),
+        );
+        if (route && route.routes.some((candidate) => candidate.tag !== tag))
+          return { how: "discriminantRoute" };
+      }
       return { how: "wrap", tag };
     }
     const candidates: { tag: number; arm: IrType; checked: boolean }[] = [];
@@ -234,6 +258,7 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
           source,
           def,
           (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
           (from, to) => lowerer.widthLiftPlan(from, to),
         )
       ) {

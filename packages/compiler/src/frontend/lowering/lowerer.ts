@@ -5834,7 +5834,7 @@ export class Lowerer {
    * Threaded into every mapType call; its `unions` array becomes
    * IrModule.unions. An arm's index in the canonical list is its runtime
    * tag. */
-  readonly unions = new UnionRegistry();
+  readonly unions = new UnionRegistry(this.shapes);
   /** Context-free successful type mappings. See TypeMapperCtx.typeMemo. */
   readonly typeMemo = new Map<number, IrType>();
   /** Successful mappings that read no generic-instantiation scope state
@@ -19238,13 +19238,23 @@ export class Lowerer {
       cached.unions !== this.unions.revision
     ) {
       cached = {
-        owners: discriminantOwners(def, (id) => this.shapes.get(id)),
+        owners: discriminantOwners(
+          def,
+          (id) => this.shapes.get(id),
+          (id) => this.unions.get(id),
+        ),
         shapes: this.shapes.revision,
         unions: this.unions.revision,
       };
       this.unionLiteralOwners.set(unionId, cached);
     }
-    return literalUnionArm(def, values, (id) => this.shapes.get(id), cached.owners);
+    return literalUnionArm(
+      def,
+      values,
+      (id) => this.shapes.get(id),
+      (id) => this.unions.get(id),
+      cached.owners,
+    );
   }
 
   /** Widen only the result view; identical parameter ABIs preserve closure identity. */
@@ -20017,10 +20027,12 @@ export class Lowerer {
       return expr;
     }
     const tag = this.armTag(expected.unionId, expr.type);
-    if (tag >= 0 && expr.type.kind === "record" && expr.kind !== "recordLit") {
-      const helper = this.recordUnionWrapHelper(expr.type, expected.unionId, expr.loc);
-      if (helper)
-        return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };
+    if (tag >= 0 && expr.type.kind === "record") {
+      // A matching payload layout cannot override the record's explicit
+      // discriminant when checked field conversions reach another arm.
+      const lift = this.widthLiftPlan(expr.type, expected);
+      if (lift?.how === "discriminantRoute" || lift?.how === "discriminantWrap")
+        return this.applyWidthLift(lift, expr, expected, expr.loc);
     }
     if (tag < 0) {
       // A derived class flowing into a union with a base-class arm widens

@@ -232,10 +232,11 @@ export function canonShadowHook(
       const normalizer = new Normalizer(checker);
       const c = normalizer.canon(type, resolve ? (t) => resolve(t) : new Map());
       const { typeMemo: _memo, canonShadow: _hook, ...rest } = ctx;
+      const shapes = new ShapeRegistry();
       const shadowCtx: TypeMapperCtx = {
         ...rest,
-        shapes: new ShapeRegistry(),
-        unions: new UnionRegistry(),
+        shapes,
+        unions: new UnionRegistry(shapes),
         canMemoizeType: () => false,
       };
       let canonical: IrType | null = null;

@@ -47,7 +47,13 @@ export function unionRetagMappable(lowerer: Lowerer, fromId: string, toId: strin
         from,
         to,
         (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
         (src, dst) => armWidthLift(lowerer, src, dst),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
       ) !== null
     );
   } finally {
@@ -332,7 +338,12 @@ export function recordUnionWrapHelper(
   const shape = lowerer.shapes.get(source.shapeId);
   const to = lowerer.unions.get(toId);
   if (!shape || !to) return null;
-  const plan = planRecordUnionWrap(shape, to, (id) => lowerer.shapes.get(id));
+  const plan = planRecordUnionWrap(
+    shape,
+    to,
+    (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
+  );
   if (!plan) return null;
   const key = `recordWrap:${source.shapeId}:${toId}`;
   const existing = lowerer.coercions.retags.get(key);
@@ -366,6 +377,7 @@ export function recordUnionRouteHelper(
     shape,
     to,
     (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
     (from, dst) => armWidthLift(lowerer, from, dst),
   );
   if (!plan) return null;
@@ -415,6 +427,7 @@ export function unionRetagHelper(
     from,
     to,
     (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
     (src, dst) => armWidthLift(lowerer, src, dst),
     trappable,
     classRoutes,
