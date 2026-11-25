@@ -270,7 +270,9 @@ export function functionKeepsRecordSources(
   fn: IrFunction,
   scan: KeepsSourceScan,
 ): boolean {
+  // Share type reachability across every body in this source scan.
   const exposes = (t: IrType): boolean => exposesKeptRecord(lowerer, t, scan);
+
   // Whether an operand of the node being walked is untyped: each expression
   // says so to the node that holds it, as the one walk passes. Only a node
   // with an untyped side is then asked for a typed side that exposes a
@@ -279,8 +281,10 @@ export function functionKeepsRecordSources(
   let exposed = false;
   const exposedOperand = (child: IrExpr): boolean => !(exposed = exposes(child.type));
   const nested = (): boolean => true;
+
   // Both visitors answer false at the first keeping node, which ends the walk.
   const expr = (e: IrExpr): boolean => {
+    // Classify this node's direct source effects.
     const untyped = isUntyped(e.type);
     if (untyped) untypedOperand = true;
     let guarded = false;
@@ -296,6 +300,24 @@ export function functionKeepsRecordSources(
           break;
         }
         if (SOURCE_KEEPING_CALL.test(e.fn)) return false;
+        // A no-replacer JSON writer observes its typed input. Its
+        // temporary box is not a source producer; argument effects and
+        // any hook bodies still pass through this same program scan.
+        const [input, replacer, gap] = e.args;
+        if (
+          e.fn === "json.stringifyReplacer" &&
+          input?.kind === "dynFrom" &&
+          replacer?.kind === "dynFrom" &&
+          replacer.value.kind === "unitLit" &&
+          replacer.value.unit === "undefined" &&
+          gap?.kind === "strLit"
+        ) {
+          const holder = untypedOperand;
+          untypedOperand = false;
+          const walked = expr(input.value) && expr(replacer) && expr(gap);
+          untypedOperand = holder;
+          return walked;
+        }
         // The compiler's own record operations read typed records only.
         if (e.fn.startsWith("record.")) break;
         for (const arg of e.args) if (arg.type.kind === "func" && exposes(arg.type)) return false;
@@ -313,9 +335,10 @@ export function functionKeepsRecordSources(
       default:
         break;
     }
+
+    // Of a guarded node, walk the test and what runs without it.
     const holder = untypedOperand;
     untypedOperand = false;
-    // Of a guarded node, the test and what runs without it.
     const walked = !guarded
       ? everyExprChild(e, expr, stmt)
       : e.kind === "ternary"
@@ -325,11 +348,14 @@ export function functionKeepsRecordSources(
     untypedOperand = holder;
     if (!walked) return false;
     if (guarded || !meets) return true;
+
+    // A meeting of typed and untyped operands can expose a source record.
     exposed = exposes(e.type);
     if (!exposed) everyExprChild(e, exposedOperand, nested);
     return !exposed;
   };
   const stmt = (s: IrStmt): boolean => {
+    // Carry operand facts only out of paths that can create a source.
     const guarded = s.kind === "if" && impliesRecordSource(s.cond);
     const holder = untypedOperand;
     untypedOperand = false;
@@ -339,6 +365,8 @@ export function functionKeepsRecordSources(
         : everyStmtChild(s, expr, stmt);
     const meets = untypedOperand;
     untypedOperand = holder;
+
+    // A thrown or otherwise exposed record can keep its untyped source.
     if (!walked) return false;
     if (s.kind === "throw" && exposes(s.value.type)) return false;
     if (guarded || !meets) return true;
@@ -347,6 +375,17 @@ export function functionKeepsRecordSources(
     return !exposed;
   };
   return !fn.body.every(stmt);
+}
+
+/** hasRecordSourceProducer applies the first-source proof to the whole
+ * program. Guarded reflective fallbacks can propagate an existing source,
+ * but cannot create the first one. */
+export function hasRecordSourceProducer(
+  lowerer: Lowerer,
+  functions: readonly IrFunction[],
+): boolean {
+  const scan: KeepsSourceScan = { memo: new Map(), visiting: new Set() };
+  return functions.some((fn) => functionKeepsRecordSources(lowerer, fn, scan));
 }
 
 /** Whether `fn` holds a checked conversion into a record type that keeps a
