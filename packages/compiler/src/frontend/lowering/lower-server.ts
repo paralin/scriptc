@@ -68,6 +68,26 @@ import { netBoundSocketValue } from "./builtins/net-address.js";
 const NARROW_DATA_HINT =
   "write/end take one string or one Uint8Array/Buffer value (narrow unions first)";
 
+/** normalizeWriterData boxes supported chunk unions for the existing checked
+ * runtime writers. Scalars retain their typed path; undefined is validated by
+ * write(), while end() also accepts the null arm as an absent chunk. */
+function normalizeWriterData(lowerer: Lowerer, data: IrExpr, name: "write" | "end"): IrExpr {
+  if (data.type.kind !== "union") return data;
+  const arms = lowerer.unions.get(data.type.unionId)?.arms;
+  if (
+    !arms?.length ||
+    !arms.every(
+      (arm) =>
+        arm.kind === "string" ||
+        (arm.kind === "bytes" && arm.elem === "u8") ||
+        arm.kind === "undefinedT" ||
+        (name === "end" && arm.kind === "nullT"),
+    )
+  )
+    return data;
+  return { kind: "dynFrom", value: data, type: DYN, loc: data.loc };
+}
+
 /** The writable numeric http.Server timeout fields. The selector is an
  * internal runtime ABI shared by the get/set libCalls (kept here beside
  * the only two construction/lowering paths that can mint the accesses). */
@@ -3538,7 +3558,7 @@ function lowerNetSocketMethodCall(
       const dataNode = args.length === 2 ? args[0]! : null;
       let main: IrExpr = resultOf("net.sockEnd", [receiver()]);
       if (dataNode !== null) {
-        const data = lowerer.lowerExpr(dataNode);
+        const data = normalizeWriterData(lowerer, lowerer.lowerExpr(dataNode), name);
         const fn: IrLibFn | null =
           data.type.kind === "string"
             ? name === "write"
@@ -3627,7 +3647,7 @@ function lowerNetSocketMethodCall(
     if (args.length === 0) {
       return resultOf("net.sockEnd", [receiver]);
     }
-    const data = lowerer.lowerExpr(args[0]!);
+    const data = normalizeWriterData(lowerer, lowerer.lowerExpr(args[0]!), name);
     if (data.type.kind === "string") {
       const fn: IrLibFn = name === "write" ? "net.sockWrite" : "net.sockEndStr";
       return resultOf(fn, [receiver, data]);
@@ -9565,7 +9585,7 @@ function lowerHttpClientMethodCall(
     if (args.length === 0) {
       return { kind: "libCall", fn: "http.clientEnd", args: [receiver], type: resultType, loc };
     }
-    const data = lowerer.lowerExpr(args[0]!);
+    const data = normalizeWriterData(lowerer, lowerer.lowerExpr(args[0]!), name);
     if (data.type.kind === "string") {
       const fn: IrLibFn = name === "write" ? "http.clientWrite" : "http.clientEndStr";
       return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
@@ -11014,7 +11034,7 @@ function lowerHttpResMethodCall(
         loc: locOf(dataNode),
       };
     }
-    const data = loweredData ?? lowerer.lowerExpr(dataNode);
+    const data = normalizeWriterData(lowerer, loweredData ?? lowerer.lowerExpr(dataNode), name);
     if (data.type.kind === "string") {
       const fn: IrLibFn = name === "write" ? "http.resWrite" : "http.resEndStr";
       if (cbArg !== null)
@@ -11051,37 +11071,6 @@ function lowerHttpResMethodCall(
           resultType,
         );
       return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
-    }
-    // end(payload ? text : undefined): an absent chunk ends without data,
-    // as end() does. The checked-dynamic end takes each arm at run time.
-    // write(chunk!) where the declared parameter accepts undefined
-    // (`chunk: any` under @types/node, which leaves the assertion's union
-    // in place): the checked-dynamic write takes the string or bytes arm
-    // and throws Node's ERR_INVALID_ARG_TYPE for undefined. A null chunk
-    // is an 'error' event in Node, not a throw, and stays refused.
-    if (data.type.kind === "union" && lowerer.dynConvertible(data.type)) {
-      const arms = lowerer.unions.get(data.type.unionId)?.arms ?? [];
-      if (
-        arms.every(
-          (arm) =>
-            arm.kind === "string" ||
-            (arm.kind === "bytes" && arm.elem === "u8") ||
-            arm.kind === "undefinedT" ||
-            (name === "end" && arm.kind === "nullT"),
-        )
-      ) {
-        const dynData: IrExpr = { kind: "dynFrom", value: data, type: DYN, loc: locOf(dataNode) };
-        const fn: IrLibFn = name === "write" ? "http.resWriteDyn" : "http.resEndDyn";
-        if (cbArg !== null)
-          return withCb(
-            name === "write" ? "http.resOnWriteFlush" : "http.resOnEndCallback",
-            fn,
-            [receiver, dynData],
-            cbArg,
-            resultType,
-          );
-        return { kind: "libCall", fn, args: [receiver, dynData], type: resultType, loc };
-      }
     }
     lowerer.noLowering(
       `${name} of '${lowerer.fmt(data.type)}' data`,
