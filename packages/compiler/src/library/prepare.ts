@@ -686,7 +686,7 @@ export function prepareLibrary(
     entryPath,
   );
   if ("diagnostics" in resolved) return fail(resolved.diagnostics);
-  const asyncSurface = moduleLibAsyncSurface(mod);
+  const asyncSurface = moduleLibAsyncSurface(mod, buildPlatform === "wasi");
   if (asyncSurface !== null) {
     return fail([libAsyncSurfaceDiag(asyncSurface.surface, asyncSurface.loc)]);
   }
