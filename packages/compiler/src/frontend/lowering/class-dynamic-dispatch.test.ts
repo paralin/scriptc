@@ -46,6 +46,7 @@ function context() {
     shapes: new Map(),
     unions: new Map(),
     classes: new Map(),
+    recordLinks: new Map(),
     liftedFns,
     liftedFnNamed: (name: string | undefined) => liftedFns.find((fn) => fn.name === name),
     keyedNameKeys: new Map(),
