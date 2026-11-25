@@ -40,7 +40,7 @@ function mapProgram(services: FrontendServices, entry: string): MappingReport {
     const checker = load.program.getTypeChecker();
     const ambient = ambientDtsPath(), overrides = overridesDtsPath(), fallback = fallbackDtsPath();
     const shapes = new ShapeRegistry();
-    const unions = new UnionRegistry();
+    const unions = new UnionRegistry(shapes);
     const ctx: TypeMapperCtx = {
       checker, shapes, unions, typeMemo: new Map(),
       classNamer: (decl) => decl.name?.text ?? "anonymous",
@@ -78,7 +78,7 @@ function mapProgram(services: FrontendServices, entry: string): MappingReport {
       const optionalDef = unions.get(optional.unionId)!;
       requireValue(unions.transform(optionalDef, union.arms) === mapped.unionId, "optional round trip changed semantic identity");
       for (const variant of union.discriminant.cases) {
-        const selected = literalUnionArm(optionalDef, variant.values, (id) => shapes.get(id));
+        const selected = literalUnionArm(optionalDef, variant.values, (id) => shapes.get(id), (id) => unions.get(id));
         requireValue(selected !== null && typeEquals(selected, union.arms[variant.tag]!), "literal selected another payload");
         variants.push(`${alias.name.text}:${JSON.stringify(variant.values)}:${selected!.shapeId}`);
       }

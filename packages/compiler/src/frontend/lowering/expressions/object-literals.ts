@@ -3603,7 +3603,13 @@ function lowerUnionRecordClone(lowerer: Lowerer, expr: ts.ObjectLiteralExpressio
                 from,
                 to,
                 (id) => lowerer.shapes.get(id),
+                (id) => lowerer.unions.get(id),
                 (source, target) => lowerer.widthLiftPlan(source, target),
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
               )
             : null;
         if (

@@ -94,7 +94,7 @@ function fixture(
     return null;
   };
   const plan = (trappable?: ReadonlySet<number>) =>
-    planUnionRetag(from, to, shapeOf, lift, trappable);
+    planUnionRetag(from, to, shapeOf, () => undefined, lift, trappable);
   return { from, to, shapes, shapeOf, lift, plan };
 }
 
@@ -115,7 +115,7 @@ describe("record conversion with shared layouts", () => {
     (type, values) => {
       const f = fixture(type, values);
       f.shapes[2]!.fields = f.shapes[1]!.fields.slice();
-      expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf)).toEqual({
+      expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf, () => undefined)).toEqual({
         field: "kind",
         fieldType: type,
         routes: [
@@ -129,7 +129,7 @@ describe("record conversion with shared layouts", () => {
         { name: "kind", type },
         { name: "left", type: STRING },
       ];
-      expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf)).toBeNull();
+      expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf, () => undefined)).toBeNull();
     },
   );
 
@@ -137,15 +137,15 @@ describe("record conversion with shared layouts", () => {
     const f = fixture();
     f.shapes[2]!.fields = f.shapes[1]!.fields.slice();
     f.to.discriminant!.cases[1]!.values = ["left"];
-    expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf)).toBeNull();
+    expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf, () => undefined)).toBeNull();
     f.to.discriminant!.cases[1]!.values = ["right"];
     f.shapes[2]!.fields.reverse();
-    expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf)).toBeNull();
+    expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf, () => undefined)).toBeNull();
   });
 
   test("routes a record that fits several arms by its discriminant", () => {
     const f = fixture();
-    expect(planRecordUnionLift(f.shapes[0]!, f.to, f.shapeOf, f.lift)).toEqual({
+    expect(planRecordUnionLift(f.shapes[0]!, f.to, f.shapeOf, () => undefined, f.lift)).toEqual({
       field: "kind",
       fieldType: STRING,
       routes: [
@@ -156,7 +156,7 @@ describe("record conversion with shared layouts", () => {
     // Without the discriminant field, or without an arm it converts into,
     // there is no route.
     const unnamed: IrRecordShape = { id: "r3", fields: f.shapes[0]!.fields.slice(1) };
-    expect(planRecordUnionLift(unnamed, f.to, f.shapeOf, f.lift)).toBeNull();
+    expect(planRecordUnionLift(unnamed, f.to, f.shapeOf, () => undefined, f.lift)).toBeNull();
     const unrelated: IrRecordShape = {
       id: "r4",
       fields: [
@@ -164,7 +164,7 @@ describe("record conversion with shared layouts", () => {
         { name: "other", type: F64 },
       ],
     };
-    expect(planRecordUnionLift(unrelated, f.to, f.shapeOf, f.lift)).toBeNull();
+    expect(planRecordUnionLift(unrelated, f.to, f.shapeOf, () => undefined, f.lift)).toBeNull();
   });
 });
 
@@ -179,6 +179,7 @@ describe("union conversion planning", () => {
     const plan = planUnionRetag(
       from,
       to,
+      () => undefined,
       () => undefined,
       () => null,
     );
@@ -198,6 +199,7 @@ describe("union conversion planning", () => {
         from,
         to,
         () => undefined,
+        () => undefined,
         () => null,
       ),
     ).toBeNull();
@@ -205,6 +207,7 @@ describe("union conversion planning", () => {
       planUnionRetag(
         from,
         to,
+        () => undefined,
         () => undefined,
         () => null,
         new Set([11]),
@@ -225,6 +228,7 @@ describe("union conversion planning", () => {
         from,
         to,
         () => undefined,
+        () => undefined,
         () => null,
       )?.slice(0, 2),
     ).toEqual([
@@ -236,6 +240,7 @@ describe("union conversion planning", () => {
       planUnionRetag(
         from,
         to,
+        () => undefined,
         () => undefined,
         () => null,
       ),
@@ -330,11 +335,17 @@ describe("union conversion planning", () => {
     const f = fixture();
     const calls: string[] = [];
     expect(
-      planUnionRetag(f.from, f.to, f.shapeOf, (source, target) => {
-        if (target.kind !== "record") return null;
-        calls.push(target.shapeId);
-        return target.shapeId === "r2" ? null : f.lift(source, target);
-      }),
+      planUnionRetag(
+        f.from,
+        f.to,
+        f.shapeOf,
+        () => undefined,
+        (source, target) => {
+          if (target.kind !== "record") return null;
+          calls.push(target.shapeId);
+          return target.shapeId === "r2" ? null : f.lift(source, target);
+        },
+      ),
     ).toBeNull();
     expect(calls).toEqual(["r1", "r2"]);
   });
@@ -380,15 +391,19 @@ describe("union conversion planning", () => {
     const route: WidthLift = { how: "discriminantRoute" };
     const lift = (source: IrType, target: IrType): WidthLift | null =>
       source.kind === "record" && target.kind === "union" ? route : f.lift(source, target);
-    expect(planUnionRetag(f.from, f.to, f.shapeOf, lift)).toEqual([
+    expect(planUnionRetag(f.from, f.to, f.shapeOf, () => undefined, lift)).toEqual([
       { kind: "own", lift: route },
       { kind: "direct", route: { tag: 2, lift: { how: "copy" }, values: [] } },
     ]);
     // A unit the destination has no arm for still traps beside it.
     f.from.arms.push(NULL_T);
-    expect(planUnionRetag(f.from, f.to, f.shapeOf, lift)!.at(-1)).toEqual({ kind: "trap" });
+    expect(planUnionRetag(f.from, f.to, f.shapeOf, () => undefined, lift)!.at(-1)).toEqual({
+      kind: "trap",
+    });
     // An arm the site's type excludes traps before its plan is asked.
-    expect(planUnionRetag(f.from, f.to, f.shapeOf, lift, new Set([0]))![0]).toEqual({
+    expect(
+      planUnionRetag(f.from, f.to, f.shapeOf, () => undefined, lift, new Set([0]))![0],
+    ).toEqual({
       kind: "trap",
     });
   });
@@ -436,6 +451,7 @@ describe("union conversion planning", () => {
       f.from,
       f.to,
       f.shapeOf,
+      () => undefined,
       (src, dst) => {
         calls++;
         return f.lift(src, dst);
@@ -501,10 +517,16 @@ describe("union conversion planning", () => {
     f.from.discriminant!.cases[0]!.tag = 1;
     f.from.discriminant!.cases.push({ tag: 0, values: ["left"] });
     let calls = 0;
-    const plan = planUnionRetag(f.from, f.to, f.shapeOf, (src, dst) => {
-      calls++;
-      return f.lift(src, dst);
-    });
+    const plan = planUnionRetag(
+      f.from,
+      f.to,
+      f.shapeOf,
+      () => undefined,
+      (src, dst) => {
+        calls++;
+        return f.lift(src, dst);
+      },
+    );
     expect(plan).toBeNull();
     expect(calls).toBe(0);
   });
@@ -556,6 +578,7 @@ describe("discriminator metadata validation", () => {
           f.from,
           f.to,
           (id) => (id === (side === "from" ? "r0" : "r1") ? undefined : f.shapeOf(id)),
+          () => undefined,
           f.lift,
         ),
       ).toBeNull();
@@ -723,6 +746,7 @@ describe("retag IR construction", () => {
         from,
         to,
         () => undefined,
+        () => undefined,
         () => null,
       )!,
       loc,
@@ -747,6 +771,7 @@ describe("retag IR construction", () => {
     const plan = planUnionRetag(
       from,
       to,
+      () => undefined,
       () => undefined,
       () => null,
     )!;
@@ -820,7 +845,15 @@ describe("promise payload widening", () => {
 
   test("maps the promise arm through the payload widening", () => {
     const to: IrUnionDef = { id: "pw1", arms: [promise(DYN), UNDEFINED_T] };
-    expect(planUnionRetag(from, to, () => undefined, pairLift(to))).toEqual([
+    expect(
+      planUnionRetag(
+        from,
+        to,
+        () => undefined,
+        () => undefined,
+        pairLift(to),
+      ),
+    ).toEqual([
       { kind: "direct", route: { tag: 0, lift: { how: "promiseWiden" }, values: [] } },
       { kind: "direct", route: { tag: 1, lift: { how: "copy" }, values: [] } },
     ]);
@@ -828,12 +861,28 @@ describe("promise payload widening", () => {
 
   test("two destination promise arms stay ambiguous", () => {
     const to: IrUnionDef = { id: "pw2", arms: [promise(DYN), promise(STRING), UNDEFINED_T] };
-    expect(planUnionRetag(from, to, () => undefined, pairLift(to))).toBeNull();
+    expect(
+      planUnionRetag(
+        from,
+        to,
+        () => undefined,
+        () => undefined,
+        pairLift(to),
+      ),
+    ).toBeNull();
   });
 
   test("an equal promise arm keeps the identity copy", () => {
     const to: IrUnionDef = { id: "pw3", arms: [promise(VOID), UNDEFINED_T] };
-    expect(planUnionRetag(from, to, () => undefined, pairLift(to))).toEqual([
+    expect(
+      planUnionRetag(
+        from,
+        to,
+        () => undefined,
+        () => undefined,
+        pairLift(to),
+      ),
+    ).toEqual([
       { kind: "direct", route: { tag: 0, lift: { how: "copy" }, values: [] } },
       { kind: "direct", route: { tag: 1, lift: { how: "copy" }, values: [] } },
     ]);
@@ -841,7 +890,13 @@ describe("promise payload widening", () => {
       identityRetagTags(
         from,
         to,
-        planUnionRetag(from, to, () => undefined, pairLift(to))!,
+        planUnionRetag(
+          from,
+          to,
+          () => undefined,
+          () => undefined,
+          pairLift(to),
+        )!,
       ),
     ).toEqual([0, 1]);
   });
@@ -879,18 +934,22 @@ describe("checked arm conversion", () => {
 
   test("a narrower record arm enters the one wider arm by the checked lift", () => {
     const to: IrUnionDef = { id: "cu1", arms: [wide, UNDEFINED_T] };
-    expect(planUnionRetag(from, to, shapeOf, lift, undefined, undefined, checkedLift)).toEqual([
+    expect(
+      planUnionRetag(from, to, shapeOf, () => undefined, lift, undefined, undefined, checkedLift),
+    ).toEqual([
       { kind: "direct", route: { tag: 0, lift: { how: "checkedWiden" }, values: [] } },
       { kind: "direct", route: { tag: 1, lift: { how: "copy" }, values: [] } },
     ]);
     // The ordinary plan is unchanged: a caller that does not ask the second
     // question still refuses the conversion.
-    expect(planUnionRetag(from, to, shapeOf, lift)).toBeNull();
+    expect(planUnionRetag(from, to, shapeOf, () => undefined, lift)).toBeNull();
   });
 
   test("two destination arms accepting the checked lift stay ambiguous", () => {
     const to: IrUnionDef = { id: "cu2", arms: [wide, wide2, UNDEFINED_T] };
-    expect(planUnionRetag(from, to, shapeOf, lift, undefined, undefined, checkedLift)).toBeNull();
+    expect(
+      planUnionRetag(from, to, shapeOf, () => undefined, lift, undefined, undefined, checkedLift),
+    ).toBeNull();
   });
 
   test("an arm the ordinary width reaches keeps the checked lift off another arm", () => {
@@ -904,13 +963,24 @@ describe("checked arm conversion", () => {
     const checkedToW2 = (source: IrType, target: IrType): WidthLift | null =>
       target.kind === "record" && target.shapeId === "w2" ? { how: "checkedWiden" } : null;
     expect(
-      planUnionRetag(from, to, shapeOf, widthToW, undefined, undefined, checkedToW2),
+      planUnionRetag(
+        from,
+        to,
+        shapeOf,
+        () => undefined,
+        widthToW,
+        undefined,
+        undefined,
+        checkedToW2,
+      ),
     ).toBeNull();
   });
 
   test("an exact arm still wins over the checked lift", () => {
     const to: IrUnionDef = { id: "cu3", arms: [narrow, wide, UNDEFINED_T] };
-    expect(planUnionRetag(from, to, shapeOf, lift, undefined, undefined, checkedLift)).toEqual([
+    expect(
+      planUnionRetag(from, to, shapeOf, () => undefined, lift, undefined, undefined, checkedLift),
+    ).toEqual([
       { kind: "direct", route: { tag: 0, lift: { how: "copy" }, values: [] } },
       { kind: "direct", route: { tag: 2, lift: { how: "copy" }, values: [] } },
     ]);
@@ -928,6 +998,7 @@ describe("class routes from a stored base arm", () => {
     planUnionRetag(
       source,
       to,
+      () => undefined,
       () => undefined,
       () => null,
       undefined,

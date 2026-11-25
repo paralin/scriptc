@@ -22,7 +22,7 @@ import type { Type } from "./ts7/adapter.js";
 
 describe("union arm lookup", () => {
   test("indexes large unions while preserving exact equality for colliding function keys", () => {
-    const unions = new UnionRegistry();
+    const unions = new UnionRegistry(new ShapeRegistry());
     const ordinary: IrType = { kind: "func", params: [], ret: VOID };
     const explicit: IrType = { kind: "func", params: [], ret: VOID, argumentsAll: true };
     const arms: IrType[] = [
@@ -40,7 +40,7 @@ describe("union arm lookup", () => {
   });
 
   test("sees finalized recursive arms after a missing lookup", () => {
-    const unions = new UnionRegistry();
+    const unions = new UnionRegistry(new ShapeRegistry());
     const recursive = {} as Type;
     const union = unions.recursiveRef(recursive, () => "Recursive");
     expect(unions.armTag(union, STRING)).toBe(-1);
@@ -59,7 +59,7 @@ describe("nullable collection union builders", () => {
     "optional %j fields and generator results share the same union",
     (type) => {
       const shapes = new ShapeRegistry();
-      const unions = new UnionRegistry();
+      const unions = new UnionRegistry(shapes);
       const optional = withUndefinedArm(type, unions);
       expect(optional?.kind).toBe("union");
       if (optional?.kind !== "union") throw new Error("missing union");
@@ -79,7 +79,7 @@ describe("nullable collection union builders", () => {
     [setOf(STRING), F64],
   ])("collection generator results retain each data arm", (yieldT, retT) => {
     const shapes = new ShapeRegistry();
-    const unions = new UnionRegistry();
+    const unions = new UnionRegistry(shapes);
     const result = genResultRecord(yieldT, retT, shapes, unions);
     const value =
       result && shapes.get(result.shapeId)?.fields.find((field) => field.name === "value")?.type;
@@ -91,13 +91,9 @@ describe("nullable collection union builders", () => {
   });
 
   test("promise generators retain the data-sibling refusal", () => {
+    const shapes = new ShapeRegistry();
     expect(
-      genResultRecord(
-        { kind: "promise", inner: STRING },
-        F64,
-        new ShapeRegistry(),
-        new UnionRegistry(),
-      ),
+      genResultRecord({ kind: "promise", inner: STRING }, F64, shapes, new UnionRegistry(shapes)),
     ).toBeNull();
   });
 });
@@ -105,7 +101,7 @@ describe("nullable collection union builders", () => {
 describe("IR type diagnostics", () => {
   test("preserves small types, repeated sibling shapes, and array precedence", () => {
     const shapes = new ShapeRegistry();
-    const unions = new UnionRegistry();
+    const unions = new UnionRegistry(shapes);
     const record: IrType = {
       kind: "record",
       shapeId: shapes.intern([{ name: "value", type: F64 }]),
@@ -132,7 +128,7 @@ describe("IR type diagnostics", () => {
 
   test("breaks recursive record/union paths without hiding later siblings", () => {
     const shapes = new ShapeRegistry();
-    const unions = new UnionRegistry();
+    const unions = new UnionRegistry(shapes);
     const record: IrType = { kind: "record", shapeId: shapes.intern([]) };
     const union: IrType = { kind: "union", unionId: unions.intern([record, STRING]) };
     shapes.get(record.shapeId)!.fields.push({ name: "next", type: union });
@@ -145,7 +141,7 @@ describe("IR type diagnostics", () => {
 
   test("keeps numeric tuple order, accessor spelling, and index signatures", () => {
     const shapes = new ShapeRegistry();
-    const unions = new UnionRegistry();
+    const unions = new UnionRegistry(shapes);
     const tuple = shapes.intern(
       [
         { name: "10", type: STRING },
@@ -172,7 +168,7 @@ describe("IR type diagnostics", () => {
 
   test("bounds expansion of a shared acyclic type graph", () => {
     const shapes = new ShapeRegistry();
-    const unions = new UnionRegistry();
+    const unions = new UnionRegistry(shapes);
     let type: IrType = STRING;
     // Only sixteen shapes, but naive expansion repeats the leaf 65,536 times.
     for (let i = 0; i < 16; i++) {
@@ -196,7 +192,8 @@ describe("IR type diagnostics", () => {
   test("bounds deeply nested wrappers without overflowing the stack", () => {
     let type: IrType = STRING;
     for (let i = 0; i < 10_000; i++) type = { kind: "promise", inner: type };
-    const text = formatIrType(type, new ShapeRegistry(), new UnionRegistry());
+    const shapes = new ShapeRegistry();
+    const text = formatIrType(type, shapes, new UnionRegistry(shapes));
     expect(text.startsWith("Promise<Promise<")).toBe(true);
     expect(text).toContain("...");
     expect(text.length).toBeLessThanOrEqual(4096);
@@ -204,7 +201,7 @@ describe("IR type diagnostics", () => {
 
   test("stops visiting wide unions and bounds long names", () => {
     const shapes = new ShapeRegistry();
-    const unions = new UnionRegistry();
+    const unions = new UnionRegistry(shapes);
     const id = unions.intern([]);
     const arms = unions.get(id)!.arms;
     for (let i = 0; i < 2000; i++) arms.push(STRING);
@@ -229,7 +226,7 @@ describe("IR type diagnostics", () => {
 
 describe("union discriminator identity", () => {
   test("equal storage layouts retain independent literal contracts", () => {
-    const registry = new UnionRegistry();
+    const registry = new UnionRegistry(new ShapeRegistry());
     const arms: IrType[] = [
       { kind: "record", shapeId: "empty" },
       { kind: "record", shapeId: "value" },
@@ -260,7 +257,7 @@ describe("union discriminator identity", () => {
   });
 
   test("primitive literal kinds are not conflated", () => {
-    const registry = new UnionRegistry();
+    const registry = new UnionRegistry(new ShapeRegistry());
     const arms: IrType[] = [
       { kind: "record", shapeId: "a" },
       { kind: "record", shapeId: "b" },
@@ -292,7 +289,7 @@ describe("union discriminator identity", () => {
 
 describe("canonical optional unions", () => {
   function fixture() {
-    const registry = new UnionRegistry();
+    const registry = new UnionRegistry(new ShapeRegistry());
     const arms: IrType[] = [
       { kind: "record", shapeId: "a" },
       { kind: "record", shapeId: "b" },
@@ -386,7 +383,7 @@ describe("canonical optional unions", () => {
   });
 
   test("plain scalar and undiscriminated record transformations remain plain", () => {
-    const registry = new UnionRegistry();
+    const registry = new UnionRegistry(new ShapeRegistry());
     for (const arms of [
       [F64, STRING],
       [{ kind: "record", shapeId: "a" } as IrType, NULL_T],

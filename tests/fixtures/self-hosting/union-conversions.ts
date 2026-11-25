@@ -99,7 +99,7 @@ function scenario(prefix: string, fieldType: IrType, left: string | number | boo
     literals.push("alias\u0000left");
   }
   unions.push(from, to);
-  const plan = planUnionRetag(from, to, shapeOf, widthLift);
+  const plan = planUnionRetag(from, to, shapeOf, (id) => unions.find((entry) => entry.id === id), widthLift);
   if (!plan || plan[0]!.kind !== "discriminant") throw new Error("missing split plan");
   const name = `${prefix}retag`;
   functions.push(buildUnionRetag(name, from, to, plan, loc, applyLift, () => "payload"));
@@ -143,7 +143,7 @@ function scenario(prefix: string, fieldType: IrType, left: string | number | boo
     id: `${prefix}required`, arms: to.arms.slice(0, 2), discriminant: to.discriminant!,
   };
   unions.push(required);
-  const narrow = planUnionRetag(from, required, shapeOf, widthLift);
+  const narrow = planUnionRetag(from, required, shapeOf, (id) => unions.find((entry) => entry.id === id), widthLift);
   if (!narrow) throw new Error("missing narrowing plan");
   const narrowName = `${prefix}narrow`;
   functions.push(buildUnionRetag(narrowName, from, required, narrow, loc, applyLift, () => "payload"));
@@ -168,7 +168,7 @@ for (let index = 0; index < 32; index++) {
   largeTo.discriminant!.cases.push({ tag: 31 - index, values: [shape] });
 }
 unions.push(largeFrom, largeTo);
-const largePlan = planUnionRetag(largeFrom, largeTo, shapeOf, widthLift);
+const largePlan = planUnionRetag(largeFrom, largeTo, shapeOf, (id) => unions.find((entry) => entry.id === id), widthLift);
 if (!largePlan) throw new Error("missing large conversion");
 functions.push(buildUnionRetag("large-retag", largeFrom, largeTo, largePlan, loc, applyLift, () => "payload"));
 for (let index = 0; index < largeFrom.arms.length; index++) {

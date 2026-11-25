@@ -49,10 +49,11 @@ const memoKey = (type: ts.Type): number => (type as { id: number }).id * 2;
  * different scopes. */
 function scope(shared: Map<number, IrType>, bound: IrType) {
   const own = new Map<number, IrType>();
+  const shapes = new ShapeRegistry();
   const ctx: TypeMapperCtx = {
     checker: load.program.getTypeChecker(),
-    shapes: new ShapeRegistry(),
-    unions: new UnionRegistry(),
+    shapes,
+    unions: new UnionRegistry(shapes),
     classNamer: (decl) => decl.name?.text ?? "anonymous",
     typeMemo: new Map(),
     typeMemoFor: () => own,

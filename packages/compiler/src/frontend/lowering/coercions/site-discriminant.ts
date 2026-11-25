@@ -222,11 +222,13 @@ function unionConversion(
     from,
     to,
     (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
     (src, dst) => lowerer.widthLiftPlan(src, dst),
     trappable,
     undefined,
     undefined,
     routes,
+    undefined,
   );
   if (plan === null) return null;
   const used: string[] = [];
