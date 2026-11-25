@@ -208,6 +208,13 @@ export function lowerJsonMethodCall(
       value.type.kind === "url" ||
       value.type.kind === "dyn" ||
       value.type.kind === "bytes" ||
+      // Retained width sources are complete only after lowering. Keep the
+      // runtime's optional result until the final physical graph proves
+      // that the static writer cannot encounter an omitted root or hook.
+      ((value.type.kind === "record" ||
+        value.type.kind === "array" ||
+        value.type.kind === "union") &&
+        lowerer.jsonStringifySafe(value.type)) ||
       toJsonClass ||
       toJsonRecord ||
       isJsonStringifyDynamicType(
@@ -259,8 +266,7 @@ export function lowerJsonMethodCall(
       // symbol). The result keeps the actual undefined unless every use
       // reads it as the text "undefined" (jsonResultTextOnly); those keep
       // the dyn-root string ABI.
-      return (value.type.kind === "dyn" || toJsonClass || toJsonRecord) &&
-        jsonResultTextOnly(lowerer, call)
+      return jsonResultTextOnly(lowerer, call)
         ? { kind: "toString", operand: raw, type: STRING, loc }
         : { kind: "dynCheck", value: raw, type: lowerer.withUndefinedArm(STRING), loc };
     }

@@ -2840,6 +2840,14 @@ export class ClassDynamicDispatch {
     const caughtSites = new Set<IrFunction>();
     // dynamic-class-report.ts follows the same parts of a type to say where
     // a class became a dynamic value: a part added here is added there.
+    // A boxed width view exposes its retained extras too. Index each
+    // worklist wave's links before walking each reachable type once.
+    const retainedSources = new Map<string, string[]>();
+    for (const link of lowerer.recordLinks.values()) {
+      const sources = retainedSources.get(link.to) ?? [];
+      sources.push(link.from);
+      retainedSources.set(link.to, sources);
+    }
     const discover = (type: IrType): void => {
       const key = typeKey(type);
       if (seenTypes.has(key)) return;
@@ -2852,6 +2860,8 @@ export class ClassDynamicDispatch {
         this.boxedArrayElems.add(typeKey(type.elem));
         discover(type.elem);
       } else if (type.kind === "record") {
+        for (const from of retainedSources.get(type.shapeId) ?? [])
+          discover({ kind: "record", shapeId: from });
         const shape = lowerer.shapes.get(type.shapeId);
         shape?.fields.forEach((field) => discover(field.type));
         if (shape?.indexValue) discover(shape.indexValue);
