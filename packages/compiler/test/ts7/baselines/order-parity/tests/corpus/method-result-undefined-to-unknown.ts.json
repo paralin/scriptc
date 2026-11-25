@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/method-result-undefined-to-unknown.ts"
+ ],
+ "diags": []
+}
