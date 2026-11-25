@@ -16,7 +16,11 @@ const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
  * builds, so they must never share build dirs. */
 const flavor = process.env["SCRIPTC_SAN"] === "1" ? "san" : "plain";
 
-async function surfaceOf(name: string, source: string): Promise<string | null> {
+async function surfaceOf(
+  name: string,
+  source: string,
+  wasmSyncGenerators = false,
+): Promise<string | null> {
   const outDir = join(cacheDir, `lib-asyncfree-${flavor}`, name);
   mkdirSync(outDir, { recursive: true });
   const entry = join(outDir, "main.ts");
@@ -31,7 +35,7 @@ async function surfaceOf(name: string, source: string): Promise<string | null> {
     throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
   }
   const mod = JSON.parse(readFileSync(result.irPath!, "utf8")) as ir.IrModule;
-  const hit = ir.moduleLibAsyncSurface(mod);
+  const hit = ir.moduleLibAsyncSurface(mod, wasmSyncGenerators);
   if (hit !== null) {
     // The anchor must be usable (a real file offset or the entry fallback).
     expect(hit.loc.file.length).toBeGreaterThan(0);
@@ -65,6 +69,35 @@ describe("async_free detection over the IR", () => {
         `function* seq(): Generator<number> { yield 1; }\nfor (const v of seq()) console.log(v);\n`,
       ),
     ).toContain("generator");
+  });
+
+  test("WASI synchronous generators need no event loop", async () => {
+    expect(
+      await surfaceOf(
+        "wasi-gen",
+        `function* seq() { yield 1; } console.log(seq().next().value);`,
+        true,
+      ),
+    ).toBeNull();
+  });
+
+  test("WASI async functions and generators still refuse", async () => {
+    expect(
+      await surfaceOf("wasi-async", `async function tick() { return 1; } void tick();`, true),
+    ).toContain("async function");
+    expect(
+      await surfaceOf(
+        "wasi-async-gen",
+        `async function* seq() { yield 1; } void seq().next();`,
+        true,
+      ),
+    ).toContain("async function");
+  });
+
+  test("WASI timers still refuse", async () => {
+    expect(await surfaceOf("wasi-timer", `setTimeout(() => console.log("t"), 1);`, true)).toContain(
+      "timers",
+    );
   });
 
   test("setTimeout refuses as the timers surface", async () => {
