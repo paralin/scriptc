@@ -5,8 +5,8 @@ import { expect, test } from "vitest";
 import { compile, deserializeModule } from "../index.js";
 import { holdCharLocalsAsUnits } from "./char-unit-locals.js";
 import { validateModule } from "./validate.js";
-import type { IrFunction, IrModule } from "./ir.js";
-import { everyStmtList } from "./traverse.js";
+import { BOOL, type IrExpr, type IrFunction, type IrModule } from "./ir.js";
+import { everyStmtList, transformStmtList } from "./traverse.js";
 
 async function lower(source: string): Promise<IrModule> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-char-units-"));
@@ -125,6 +125,11 @@ function scan(src: string, pos: number): number {
   const c = src[pos];
   if (c === undefined) n += 16;
   if (c !== undefined && c > "m") n += 32;
+  if (c !== undefined && "a" <= c && c <= "z") n += 256;
+  if (c === undefined || "m" < c || c > "z") n += 512;
+  if (typeof c === "string" && c !== "x") n += 1024;
+  if (typeof c !== "string" || "q" === c) n += 2048;
+  if (c !== undefined && ((c !== undefined && c > "a") || c < "z")) n += 4096;
   switch (c) {
     case "q":
       n += 64;
@@ -138,10 +143,77 @@ console.log(scan("a b", 1), scan("q", 0), scan("ab", 5), scan("r=", 0.5));
 `),
   );
   const scan = fn(mod, "scan");
+  expect(validateModule(mod)).toEqual([]);
   // Only charCodeAt reads remain: no union tests, dynamic compares, charAt
   // or length reads.
   expect(new Set(unionTests(scan))).toEqual(new Set(["charCodeAt"]));
   expect(scan.locals.find((l) => l.name === "c")!.type).toEqual({ kind: "f64" });
+});
+
+test("optional character narrowing without a dominating tag test keeps its guard", async () => {
+  const before = await lower(`
+function guarded(src: string, pos: number): boolean {
+  const c = src[pos];
+  return c !== undefined && c > "m";
+}
+console.log(guarded("x", 0));
+`);
+  const original = fn(before, "guarded");
+  const guardedExpressions = new Set<IrExpr>();
+  everyStmtList(original.body, {
+    stmt: () => true,
+    expr: (expr) => {
+      if (expr.kind === "logical" && expr.left.kind === "unionIsTag") guardedExpressions.add(expr);
+      return true;
+    },
+  });
+  expect(guardedExpressions.size).toBe(1);
+
+  // A missing guard or one that admits undefined cannot justify dropping
+  // the narrowed string extraction's runtime tag check.
+  for (const guard of ["missing", "absent", "true-or", "false-and"]) {
+    const guarded: IrFunction = {
+      ...original,
+      body: transformStmtList(original.body, {
+        stmt: (stmt) => stmt,
+        expr: (expr) =>
+          guardedExpressions.has(expr) && expr.kind === "logical" && expr.left.kind === "unionIsTag"
+            ? {
+                ...expr,
+                op: guard === "false-and" ? "||" : expr.op,
+                left:
+                  guard === "true-or" || guard === "false-and"
+                    ? {
+                        kind: "logical",
+                        op: guard === "true-or" ? "||" : "&&",
+                        left: {
+                          ...expr.left,
+                          negated: guard === "true-or" ? expr.left.negated : !expr.left.negated,
+                        },
+                        right: {
+                          kind: "boolLit",
+                          value: guard === "true-or",
+                          type: BOOL,
+                          loc: expr.left.loc,
+                        },
+                        type: BOOL,
+                        loc: expr.left.loc,
+                      }
+                    : guard === "absent"
+                      ? { ...expr.left, negated: !expr.left.negated }
+                      : { kind: "boolLit", value: true, type: BOOL, loc: expr.left.loc },
+              }
+            : expr,
+      }),
+    };
+    const input = {
+      ...before,
+      functions: before.functions.map((f) => (f === original ? guarded : f)),
+    };
+
+    expect(validateModule(input)).toEqual([]);
+    expect(fn(holdCharLocalsAsUnits(input), "guarded")).toBe(guarded);
+  }
 });
 
 test("optional character reads with other uses stay reads", async () => {
@@ -157,10 +229,15 @@ function longer(src: string, pos: number): boolean {
 function twice(src: string, pos: number): boolean {
   return src[pos * 2] === undefined;
 }
+function asserted(src: string, pos: number): boolean {
+  const c = src[pos];
+  return (c as string) > "m";
+}
+console.log(asserted("x", 0));
 console.log(kept("a b", 1), kept("ab", 0), kept("", 3), longer("ab", 0), twice("ab", 1));
 `);
   const after = holdCharLocalsAsUnits(before);
-  for (const name of ["kept", "longer", "twice"]) {
+  for (const name of ["kept", "longer", "twice", "asserted"]) {
     expect(fn(before, name)).toBeDefined();
     expect(unionTests(fn(after, name))).toEqual(unionTests(fn(before, name)));
   }

@@ -7,7 +7,7 @@ import {
   type IrModule,
   type IrStmt,
 } from "./ir.js";
-import { mapExprChildren, mapStmtChildren } from "./traverse.js";
+import { everyExprChild, everyStmtChild, mapExprChildren, mapStmtChildren } from "./traverse.js";
 import { type IrFieldWalker, walkStmtFields } from "./fields.generated.js";
 import { type IrNodeIndex, type IrNodeKind, lacksNode } from "./node-index.js";
 
@@ -203,9 +203,100 @@ interface UnitTest {
   test: (unit: () => IrExpr) => IrExpr;
 }
 
+/** narrowedUnitUse identifies a one-unit test of the present string arm
+ * of the same optional character local. Its caller must prove that arm. */
+function narrowedUnitUse(
+  e: IrExpr,
+  tagsOf: (operand: IrExpr) => OptionalCharRead | null,
+): { operand: IrExpr & { kind: "varRef" }; code: number; left: boolean } | null {
+  if (e.kind !== "strEq" && e.kind !== "strCmp") return null;
+
+  // Match only the same optional local's string projection. A checked cast
+  // or another union's extraction is not a character-unit use.
+  const literalRight = e.right.kind === "strLit";
+  const literal = literalRight ? e.right : e.left;
+  const other = literalRight ? e.left : e.right;
+  if (
+    literal.kind !== "strLit" ||
+    literal.value.length !== 1 ||
+    other.kind !== "unionNarrow" ||
+    other.type.kind !== "string" ||
+    other.value.kind !== "varRef"
+  )
+    return null;
+  const tags = tagsOf(other.value);
+  if (!tags || other.unionId !== tags.unionId || other.tag !== tags.stringTag) return null;
+  return { operand: other.value, code: literal.value.charCodeAt(0), left: literalRight };
+}
+
+/** guardedUnitTests records narrowed comparisons whose optional local is
+ * present on the logical RHS. Only exact tag tests prove presence; an
+ * assertion or an unguarded extraction keeps its runtime narrowing guard.
+ * The tree and guard atoms are visited once; scoped facts contain only
+ * optional character locals. */
+function guardedUnitTests(
+  fn: IrFunction,
+  tagsOf: (operand: IrExpr) => OptionalCharRead | null,
+): ReadonlySet<IrExpr> {
+  const guarded = new Set<IrExpr>();
+  const present = new Set<string>();
+  const trail: string[] = [];
+
+  // Leave only facts guaranteed by this condition's requested outcome.
+  // Conjunctions true and disjunctions false keep both operands' facts;
+  // the other outcomes are visited without adding any surviving proof.
+  const condition = (e: IrExpr, truth: boolean): void => {
+    if (e.kind === "unary" && e.op === "!") {
+      condition(e.operand, !truth);
+      return;
+    }
+    if (e.kind === "logical" && (e.op === "&&") === truth) {
+      condition(e.left, truth);
+      condition(e.right, truth);
+      return;
+    }
+    visit(e);
+    if (e.kind !== "unionIsTag" || e.value.kind !== "varRef") return;
+    const tags = tagsOf(e.value);
+    if (
+      !tags ||
+      tags.unionId !== e.unionId ||
+      (e.tag !== tags.stringTag && e.tag !== tags.undefinedTag) ||
+      ((e.tag === tags.stringTag) !== e.negated) !== truth ||
+      present.has(e.value.localId)
+    )
+      return;
+    present.add(e.value.localId);
+    trail.push(e.value.localId);
+  };
+
+  const visit = (e: IrExpr): void => {
+    if (e.kind === "logical") {
+      // Only additions inside this scope roll back. An outer guard's fact
+      // survives a nested condition that proves the same local present.
+      const mark = trail.length;
+      condition(e.left, e.op === "&&");
+      visit(e.right);
+      while (trail.length > mark) present.delete(trail.pop()!);
+      return;
+    }
+    const use = narrowedUnitUse(e, tagsOf);
+    if (use && present.has(use.operand.localId)) guarded.add(e);
+    everyExprChild(e, visitExpr, visitStmt);
+  };
+  const visitExpr = (e: IrExpr): boolean => {
+    visit(e);
+    return true;
+  };
+  const visitStmt = (stmt: IrStmt): boolean => everyStmtChild(stmt, visitExpr, visitStmt);
+  for (const stmt of fn.body) visitStmt(stmt);
+  return guarded;
+}
+
 function optionalUnitTest(
   e: IrExpr,
   tagsOf: (operand: IrExpr) => OptionalCharRead | null,
+  guarded: ReadonlySet<IrExpr>,
 ): UnitTest | null {
   const loc = e.loc;
   const compare = (op: "===" | "!==" | CompareOp, u: IrExpr, right: IrExpr): IrExpr => ({
@@ -217,6 +308,19 @@ function optionalUnitTest(
     loc,
   });
   const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  if (guarded.has(e) && (e.kind === "strEq" || e.kind === "strCmp")) {
+    const use = narrowedUnitUse(e, tagsOf);
+    if (use)
+      return {
+        operand: use.operand,
+        test: (unit) =>
+          compare(
+            e.kind === "strEq" ? (e.negated ? "!==" : "===") : use.left ? e.op : FLIPPED[e.op],
+            unit(),
+            num(use.code),
+          ),
+      };
+  }
   if (e.kind === "unionEq" && !e.sameValue) {
     for (const [operand, other] of [
       [e.left, e.right],
@@ -334,6 +438,8 @@ function rewriteFunction(fn: IrFunction): IrFunction {
   const localTags = (operand: IrExpr): OptionalCharRead | null =>
     operand.kind === "varRef" ? (reads.get(operand.localId) ?? null) : null;
 
+  const guarded = reads.size > 0 ? guardedUnitTests(fn, localTags) : new Set<IrExpr>();
+
   // Every mention of a candidate, in any field, against the mentions the
   // rewrite understands.
   const mentions = new Map<string, number>();
@@ -344,7 +450,7 @@ function rewriteFunction(fn: IrFunction): IrFunction {
   };
   const counter: IrFieldWalker = {
     node: (node) => {
-      const id = understoodMention(node, locals, reads, localTags);
+      const id = understoodMention(node, locals, reads, localTags, guarded);
       if (id !== null && candidates.has(id)) {
         note(understood, id);
         if (node.kind === "varDecl") note(declarations, id);
@@ -414,7 +520,7 @@ function rewriteFunction(fn: IrFunction): IrFunction {
         return charUnitTest(e, read, direct.code, direct.left);
       }
     }
-    const optional = optionalUnitTest(e, operandTags);
+    const optional = optionalUnitTest(e, operandTags, guarded);
     if (optional) {
       const operand = optional.operand;
       if (operand.kind === "varRef") {
@@ -503,6 +609,7 @@ function understoodMention(
   locals: ReadonlyMap<string, IrLocal>,
   reads: ReadonlyMap<string, OptionalCharRead>,
   localTags: (operand: IrExpr) => OptionalCharRead | null,
+  guarded: ReadonlySet<IrExpr>,
 ): string | null {
   const kind = n.kind;
   if (
@@ -524,7 +631,10 @@ function understoodMention(
       ? n.localId
       : null;
   }
-  if (n.kind === "strEq" || n.kind === "strCmp") return unitUse(n)?.id ?? null;
+  if (n.kind === "strEq" || n.kind === "strCmp") {
+    const use = unitUse(n);
+    if (use) return use.id;
+  }
   if (n.kind === "switch") {
     if (n.disc.kind !== "varRef" || n.disc.type.kind !== "string") return null;
     if (!n.cases.some((c) => c.test !== null)) return null;
@@ -533,7 +643,7 @@ function understoodMention(
     );
     return units ? n.disc.localId : null;
   }
-  const optional = optionalUnitTest(n as IrExpr, localTags);
+  const optional = optionalUnitTest(n as IrExpr, localTags, guarded);
   return optional?.operand.kind === "varRef" ? optional.operand.localId : null;
 }
 
