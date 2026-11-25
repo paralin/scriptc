@@ -49,6 +49,7 @@ test.each([false, true])(
           "scr_hash.c",
           "scr_bytes.c",
           "scr_shared.c",
+          "scr_context.c",
           "scr_bigint.c",
           "scr_url.c",
           "scr_url_params.c",
