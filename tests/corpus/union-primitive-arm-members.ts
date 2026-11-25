@@ -1,9 +1,5 @@
-// Member reads on a union whose STORED value still carries a scalar
-// primitive arm that flow analysis removed. JS boxes the primitive, finds
-// no such property, and answers undefined — the same answer an absent
-// record field gives — so a read through the optional chain is defined
-// for every stored arm. Both directions print, so the differential run
-// pins the record arm's real value and the primitive arm's undefined.
+// Stable guards can project a record arm. A repeated getter can instead
+// return a scalar arm, whose missing record member must answer undefined.
 
 type Negotiation = { parsed: number; sequence: string } | "pending" | undefined;
 
@@ -32,9 +28,8 @@ console.log(sequenceOf({ parsed: 3, sequence: "kitty" }));
 console.log(sequenceOf("pending"));
 console.log(sequenceOf(undefined));
 
-// The same shape through a `typeof` guard and a different field: the
-// stored union is the declared one even though the checker removed the
-// literal arm, so the primitive arm answers undefined again.
+// The same stable guard must preserve the record's numeric field and
+// the optional chain's absent answer.
 function parsedOrNone(n: Negotiation): number | undefined {
   if (typeof n === "string") return undefined;
   return n?.parsed;
@@ -44,9 +39,7 @@ console.log(parsedOrNone("pending"));
 console.log(parsedOrNone({ parsed: 2, sequence: "x" }));
 console.log(parsedOrNone(undefined));
 
-// A number arm beside a record arm: a plain (non-optional) read whose
-// stored union still carries the number arm answers undefined for the
-// record's field, and the guard in the caller never sees it.
+// A plain member read after a number guard keeps the record's value.
 type Counted = { total: number } | number;
 
 function totalOrUndefined(c: Counted): number | undefined {
@@ -56,3 +49,19 @@ function totalOrUndefined(c: Counted): number | undefined {
 
 console.log(totalOrUndefined({ total: 9 }));
 console.log(totalOrUndefined(42));
+
+// Getter reads are distinct: the first narrows to a record, but the second
+// returns a string. The optional member read must not reuse the old proof.
+class ChangingPart {
+  reads = 0;
+  get image_url(): string | { url?: string } | undefined {
+    return ++this.reads === 1 ? { url: "record" } : "string";
+  }
+}
+
+function pickChanging(part: ChangingPart): string | undefined {
+  return typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
+}
+
+const changing = new ChangingPart();
+console.log(pickChanging(changing), changing.reads);

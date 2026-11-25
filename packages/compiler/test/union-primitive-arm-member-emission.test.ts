@@ -1,26 +1,18 @@
-// A member read on a union whose stored value still carries a scalar
-// primitive arm that flow analysis removed. Node boxes the primitive and
-// answers undefined for a name its prototype chain does not carry, which
-// is the answer the read must produce — the arm is unreachable per the
-// checker anyway, but lowering erases the narrowing and dispatches over
-// every stored arm. A name the primitive DOES declare keeps the read's
-// own lowering or fence, so `{ n: number } | string` never turns a real
-// string member into undefined.
+// Stable guards project the present record inside the optional chain.
+// Repeated getters retain their declared scalar arms and their JS member answers.
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile, deserializeModule, validateModule } from "../src/index.js";
 
+import type { IrExpr, IrModule } from "../src/ir/ir.js";
+import { everyExpr, everyStmtList } from "../src/ir/traverse.js";
+
 const PRELUDE = [
   "interface Part { image_url?: string | { url?: string } }",
   "type Negotiation = { parsed: number; sequence: string } | 'pending' | undefined;",
 ];
-
-type IrModule = {
-  entry: string;
-  functions: { name: string; body: unknown }[];
-};
 
 async function compileToIr(
   body: string[],
@@ -37,23 +29,69 @@ async function compileToIr(
         module: null,
         diagnostics: result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
       };
-    const module = deserializeModule(await readFile(outPath, "utf8")) as unknown as IrModule;
-    expect(validateModule(module as never)).toEqual([]);
+    const module = deserializeModule(await readFile(outPath, "utf8"));
+    expect(validateModule(module)).toEqual([]);
     return { ok: true, module, diagnostics: "" };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
-/** The IR bodies of the functions whose name starts with `root`, as text
- * (a specialized function keeps its source name as a prefix). */
-function bodies(module: IrModule, root: string): string {
-  return JSON.stringify(
-    module.functions.filter((fn) => fn.name.startsWith(root)).map((fn) => fn.body),
+function expressions(module: IrModule, root: string): IrExpr[] {
+  const expressions: IrExpr[] = [];
+  for (const fn of module.functions) {
+    if (!fn.name.startsWith(root)) continue;
+    everyStmtList(fn.body, {
+      expr: (expr) => {
+        expressions.push(expr);
+        return true;
+      },
+      stmt: () => true,
+    });
+  }
+  return expressions;
+}
+
+function guardedRecordRead(module: IrModule, root: string, field: string): void {
+  // Keep the stored union on the absence test, including its scalar arm.
+  const nodes = expressions(module, root);
+  const chain = nodes.find((node) => node.kind === "optChain");
+  expect(chain?.kind).toBe("optChain");
+  if (chain?.kind !== "optChain") return;
+  expect(chain.receiver.type.kind).toBe("union");
+  if (chain.receiver.type.kind !== "union") return;
+  const receiverId = chain.receiver.type.unionId;
+  const receiver = module.unions?.find((union) => union.id === receiverId);
+  expect(receiver?.arms.map((arm) => arm.kind)).toEqual(
+    expect.arrayContaining(["record", "string", "undefinedT"]),
+  );
+
+  // Project only the guarded chain receiver before reading the record field.
+  expect(nodes.some((node) => node.kind === "unionKeyGet")).toBe(false);
+  const guarded: IrExpr[] = [];
+  everyExpr(chain.body, {
+    expr: (expr) => {
+      guarded.push(expr);
+      return true;
+    },
+    stmt: () => true,
+  });
+  const read = guarded.find((node) => node.kind === "recordGet" && node.field === field);
+  expect(read?.kind).toBe("recordGet");
+  if (read?.kind !== "recordGet") return;
+  expect(read.obj.kind).toBe("call");
+  if (read.obj.kind !== "call") return;
+  expect(read.obj.callee).toMatch(/^%union\.narrow\./);
+  expect(guarded).toContainEqual(
+    expect.objectContaining({
+      kind: "chainRecv",
+      id: chain.id,
+      type: chain.receiver.type,
+    }),
   );
 }
 
-test("a string arm the guard removed answers undefined for a record field", async () => {
+test("a stable string guard projects the present record inside the chain", async () => {
   const compiled = await compileToIr([
     "function pick(part: Part): string | undefined {",
     "  return typeof part.image_url === 'string' ? part.image_url : part.image_url?.url;",
@@ -61,14 +99,10 @@ test("a string arm the guard removed answers undefined for a record field", asyn
     "console.log(pick({ image_url: 'a' }), pick({ image_url: { url: 'b' } }), pick({}));",
   ]);
   expect(compiled.ok, compiled.diagnostics).toBe(true);
-  const pick = bodies(compiled.module!, "pick");
-  // The keyed read over the stored union: the record arm reads its
-  // declared field, the string arm answers the join's undefined arm.
-  expect(pick).toContain('"unionKeyGet"');
-  expect(pick).toContain('"url"');
+  guardedRecordRead(compiled.module!, "pick", "url");
 });
 
-test("a literal arm the guard removed answers undefined for a record field", async () => {
+test("a stable literal guard projects the present record inside the chain", async () => {
   const compiled = await compileToIr([
     "function read(n: Negotiation): string {",
     "  if (n === 'pending') return 'pending';",
@@ -77,7 +111,7 @@ test("a literal arm the guard removed answers undefined for a record field", asy
     "console.log(read('pending'), read({ parsed: 1, sequence: 's' }), read(undefined));",
   ]);
   expect(compiled.ok, compiled.diagnostics).toBe(true);
-  expect(bodies(compiled.module!, "read")).toContain('"unionKeyGet"');
+  guardedRecordRead(compiled.module!, "read", "sequence");
 });
 
 test("a primitive member keeps its own answer, not undefined", async () => {
@@ -92,5 +126,26 @@ test("a primitive member keeps its own answer, not undefined", async () => {
   ]);
   expect(compiled.ok, compiled.diagnostics).toBe(true);
   // Its lowering reads each arm's own `length`; no undefined answer joins in.
-  expect(bodies(compiled.module!, "size")).not.toContain('"undefinedT"');
+  expect(
+    expressions(compiled.module!, "size").some((node) => node.type.kind === "undefinedT"),
+  ).toBe(false);
+});
+
+test("a repeated getter keeps a scalar arm that a prior read excluded", async () => {
+  const compiled = await compileToIr([
+    "class ChangingPart {",
+    "  reads = 0;",
+    "  get image_url(): string | { url?: string } | undefined {",
+    "    return ++this.reads === 1 ? { url: 'record' } : 'string';",
+    "  }",
+    "}",
+    "function pickChanging(part: ChangingPart): string | undefined {",
+    "  return typeof part.image_url === 'string' ? part.image_url : part.image_url?.url;",
+    "}",
+    "const part = new ChangingPart(); console.log(pickChanging(part), part.reads);",
+  ]);
+  expect(compiled.ok, compiled.diagnostics).toBe(true);
+  expect(
+    expressions(compiled.module!, "pickChanging").some((node) => node.kind === "unionKeyGet"),
+  ).toBe(true);
 });

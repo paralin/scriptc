@@ -244,11 +244,8 @@ export class NarrowingStability {
       if (!checker.getPropertyOfType(declared, member.access.name.text)) return null;
     } else if (position === "chain") {
       if (classNarrowing) return null;
-      // A chain body is lowered for the checker's present receiver type:
-      // only a narrowing that removed nothing but null/undefined can be
-      // restored to the guarded declared receiver.
-      const present = this.lowerer.mapTypeOf(checker.getNonNullableType(declared));
-      if (present === null || !typeEquals(present, narrowedIr)) return null;
+      // The chain body dispatches over the restored present union. A getter
+      // can change any arm between reads, not only its nullish state.
     } else if (position === "context") {
       if (!this.argumentSlotIsGeneric(node)) return null;
       const contextual = checker.getContextualType(node);
