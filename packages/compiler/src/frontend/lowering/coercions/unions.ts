@@ -81,6 +81,8 @@ export function narrowedRetagHelper(
   loc: SrcLoc,
   alsoStored?: ReadonlySet<number>,
 ): string | null {
+  // The site's current type must describe a nonempty subset of the stored
+  // union before flow narrowing can strand any of its other arms.
   const from = lowerer.unions.get(fromId);
   const to = lowerer.unions.get(toId);
   if (!from || !to) return null;
@@ -88,8 +90,17 @@ export function narrowedRetagHelper(
   if (!siteT) return null;
   const siteArms = siteT.kind === "union" ? lowerer.unions.get(siteT.unionId)?.arms : [siteT];
   if (!siteArms || siteArms.length === 0) return null;
+
+  // Shared class routes prove which site subclasses the base storage can
+  // hold; exact source arms need no runtime class test.
   const allowed = new Set<number>();
-  const classRoutes = new Map<number, UnionClassRoute[]>();
+  const classRoutes = checkedClassRetagRoutes(lowerer, fromId, toId, siteArms);
+  const routedClasses = new Set<string>();
+  for (const routes of classRoutes.values())
+    for (const route of routes) routedClasses.add(route.arm.className);
+
+  // Every site arm must have an exact source tag or a checked subclass
+  // route. A different type is not a narrowing of this stored union.
   for (const a of siteArms) {
     const fi = lowerer.armTag(fromId, a);
     if (fi >= 0) {
@@ -101,43 +112,81 @@ export function narrowedRetagHelper(
     // arm. The destination must hold the subclass, and the source arm that
     // stores it is the one whose class it descends from: that arm's payload
     // is class-tested and viewed as the subclass.
-    if (a.kind !== "object") return null; // not a narrowing of the source union
-    const toTag = lowerer.armTag(toId, a);
-    if (toTag < 0) return null;
-    let stored = false;
-    for (let i = 0; i < from.arms.length; i++) {
-      const arm = from.arms[i]!;
-      if (arm.kind !== "object") continue;
-      if (a.className === arm.className || !lowerer.isSubclassOf(a.className, arm.className))
-        continue;
-      stored = true;
-      const routes = classRoutes.get(i) ?? [];
-      routes.push({ tag: toTag, arm: a });
-      classRoutes.set(i, routes);
-    }
-    if (!stored) return null;
+    if (a.kind !== "object" || !routedClasses.has(a.className)) return null;
   }
+
   // A source arm a read keeps beside the site's arms answers the read in
   // the destination exactly as the site's arms do, so it needs no
   // extraction: it keeps the plain route a site arm keeps.
   for (const tag of alsoStored ?? []) if (tag >= 0 && tag < from.arms.length) allowed.add(tag);
+
   // A source arm the site still allows exactly keeps its plain route: the
   // value can be a plain instance of that class, which no subclass test
   // selects.
   for (const tag of allowed) classRoutes.delete(tag);
-  // Most-derived first, so a site allowing both a subclass and its
-  // descendant tests the narrower class interval before the wider one.
-  const depth = (arm: UnionClassRoute["arm"]): number =>
-    to.arms.filter(
-      (other) => other.kind === "object" && lowerer.isSubclassOf(arm.className, other.className),
-    ).length;
-  for (const routes of classRoutes.values()) routes.sort((x, y) => depth(y.arm) - depth(x.arm));
+
+  // Only arms the site's exact or class routes cannot represent strand.
   const trappable = new Set<number>();
   from.arms.forEach((_, i) => {
     if (!allowed.has(i) && !classRoutes.has(i)) trappable.add(i);
   });
   if (trappable.size === 0 && classRoutes.size === 0) return null; // nothing stranded: the plain re-tag already declined
   return lowerer.unionRetagHelper(fromId, toId, loc, trappable, classRoutes);
+}
+
+/** checkedClassRetagRoutes selects destination subclasses from a stored base
+ * arm. The same checked class tests serve flow narrowing and untyped JS
+ * boundaries; an actual base instance reaches the helper's existing trap. */
+export function checkedClassRetagRoutes(
+  lowerer: Lowerer,
+  fromId: string,
+  toId: string,
+  candidates?: readonly IrType[],
+): Map<number, UnionClassRoute[]> {
+  // Resolve both registries before planning routes for their current view.
+  const routes = new Map<number, UnionClassRoute[]>();
+  const depths = new Map<string, number>();
+  const from = lowerer.unions.get(fromId);
+  const to = lowerer.unions.get(toId);
+  if (!from || !to) return routes;
+
+  // A stored base arm can hold any subclass instance. Only subclasses
+  // actually represented in the destination receive a checked route.
+  for (const candidate of candidates ?? to.arms) {
+    if (candidate.kind !== "object") continue;
+    const tag = lowerer.armTag(toId, candidate);
+    if (tag < 0) continue;
+    for (let sourceTag = 0; sourceTag < from.arms.length; sourceTag++) {
+      // Select a base storage arm that can hold this destination class.
+      const source = from.arms[sourceTag]!;
+      if (
+        source.kind !== "object" ||
+        candidate.className === source.className ||
+        !lowerer.isSubclassOf(candidate.className, source.className)
+      )
+        continue;
+
+      // Keep the payload conversion checked at its existing union boundary.
+      const sourceRoutes = routes.get(sourceTag) ?? [];
+      sourceRoutes.push({ tag, arm: candidate });
+      routes.set(sourceTag, sourceRoutes);
+
+      // Cache each class's depth once; sorting performs only indexed reads.
+      if (!depths.has(candidate.className)) {
+        let depth = 0;
+        for (const other of to.arms)
+          if (other.kind === "object" && lowerer.isSubclassOf(candidate.className, other.className))
+            depth++;
+        depths.set(candidate.className, depth);
+      }
+    }
+  }
+
+  // A subclass interval is contained in its parent's interval, so the
+  // most-derived destination must be tested before a broader destination.
+  for (const sourceRoutes of routes.values())
+    sourceRoutes.sort((x, y) => depths.get(y.arm.className)! - depths.get(x.arm.className)!);
+  return routes;
 }
 
 /** A union conversion whose source arms include an object type with a
