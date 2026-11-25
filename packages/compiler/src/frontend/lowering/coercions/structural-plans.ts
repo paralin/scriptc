@@ -636,7 +636,9 @@ function presenceRoute(
     const extra = presentShape.fields.filter(
       (f) => !absentShape.fields.some((g) => g.name === f.name),
     );
-    if (extra.length !== 1 || optional(extra[0]!.type)) continue;
+    // An unknown slot also holds undefined. Its value cannot decide
+    // whether the record belongs to the arm that declares that field.
+    if (extra.length !== 1 || extra[0]!.type.kind === "dyn" || optional(extra[0]!.type)) continue;
     if (absentShape.fields.some((g) => !presentShape.fields.some((f) => f.name === g.name)))
       continue;
     const field = source.fields.find((f) => f.name === extra[0]!.name);
