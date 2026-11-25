@@ -36,7 +36,12 @@ test.for(modes)(
           emission: "llvm",
           optimization: mode === "wasm-dev" ? "dev" : "release",
           abi: { prefix: "app_", init_symbol: "app_init", sink_register_symbol: "app_sink" },
-          exports: [{ export: "dispatch", symbol: "app_dispatch", params: [], returns: "f64" }],
+          exports: ["dispatch", "initCodecs", "codecStep"].map((name) => ({
+            export: name,
+            symbol: `app_${name}`,
+            params: [],
+            returns: "f64",
+          })),
         }),
       );
       const result = await compileLibrary({
@@ -45,13 +50,21 @@ test.for(modes)(
         sanitize: mode === "sanitized",
       });
       if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+      const llvm = await readFile(result.llvmPath, "utf8");
+      for (const name of [
+        "scr_text_decoder_to_dyn",
+        "scr_text_encoder_to_dyn",
+        "scr_text_codec_from_dyn",
+      ])
+        expect(llvm).toContain(`call ptr @${name}(`);
       const reference = spawnSync(
         process.execPath,
         [
           "--no-warnings",
           "--input-type=module",
           "-e",
-          `import {dispatch} from ${JSON.stringify(fixture)}; console.log(dispatch());`,
+          `import {dispatch, initCodecs, codecStep} from ${JSON.stringify(fixture)};
+           console.log(dispatch()); console.log(initCodecs()); console.log(codecStep()); console.log(codecStep());`,
         ],
         { encoding: "utf8" },
       );
@@ -60,7 +73,10 @@ test.for(modes)(
         const exports = await wasmLibrary(result.archivePath);
         (exports.app_init as Function)();
         actual = {
-          stdout: `${(exports.app_dispatch as Function)()}\n`,
+          stdout:
+            ["app_dispatch", "app_initCodecs", "app_codecStep", "app_codecStep"]
+              .map((name) => (exports[name] as Function)())
+              .join("\n") + "\n",
           stderr: "",
           status: 0,
         };
@@ -122,7 +138,7 @@ test.for(modes)(
           binary = join(directory, "probe");
         await writeFile(
           probe,
-          '#include <stdio.h>\nvoid app_init(void); double app_dispatch(void);\nint main(void) { app_init(); printf("%.0f\\n", app_dispatch()); app_init(); return 0; }\n',
+          '#include <stdio.h>\nvoid app_init(void); double app_dispatch(void); double app_initCodecs(void); double app_codecStep(void);\nint main(void) { app_init(); printf("%.0f\\n", app_dispatch()); printf("%.0f\\n", app_initCodecs()); printf("%.0f\\n", app_codecStep()); printf("%.0f\\n", app_codecStep()); app_init(); return 0; }\n',
         );
         const link = spawnSync(
           "clang",
