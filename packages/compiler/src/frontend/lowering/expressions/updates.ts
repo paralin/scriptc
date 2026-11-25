@@ -641,8 +641,8 @@ export function lowerIncDec(
     const target = ts.isPropertyAccessExpression(access)
       ? lowerer.fieldTarget(access)
       : (symbolFieldTarget(lowerer, access) ??
-          keyedFieldTarget(lowerer, access, true) ??
-          tupleElementTarget(lowerer, access));
+        keyedFieldTarget(lowerer, access, true) ??
+        tupleElementTarget(lowerer, access));
     if (target && lowerer.dynConvertible(target.fieldType)) {
       checkDeferredMemberReceiver(lowerer, target, access);
       target.obj = save(target.obj, "%incrementReceiver");
@@ -1495,8 +1495,8 @@ export function lowerFieldCompoundValue(
     ts.isPropertyAccessExpression(access)
       ? (lowerer.fieldTarget(access) ?? assertedUnionFieldTarget(lowerer, access))
       : (symbolFieldTarget(lowerer, access) ??
-          keyedFieldTarget(lowerer, access, true) ??
-          tupleElementTarget(lowerer, access));
+        keyedFieldTarget(lowerer, access, true) ??
+        tupleElementTarget(lowerer, access));
   const target = targetOf();
   if (!target)
     lowerer.unsupported("SC1090", access, "compound assignment to unsupported field targets");

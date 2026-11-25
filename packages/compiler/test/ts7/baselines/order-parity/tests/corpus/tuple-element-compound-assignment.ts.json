@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/tuple-element-compound-assignment.ts"],
+  "diags": []
+}
