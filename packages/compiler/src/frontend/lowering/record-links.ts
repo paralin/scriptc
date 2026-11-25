@@ -29,6 +29,7 @@ import {
   type IrType,
   type SrcLoc,
   shapeKeyOrders,
+  isJsonStringifySafeType,
   typeEquals,
   typeKey,
 } from "../../ir/ir.js";
@@ -39,6 +40,7 @@ import { recordHasOwnHelper, recordKeysArrayCall } from "./lower-calls.js";
 import { callOwn, callOwnOrBuiltin } from "./record-inherited.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { inspectHelperCall } from "./lower-inspect.js";
+import type { FunctionCensus } from "./function-census.js";
 import { InternalCompilerError } from "../../errors.js";
 import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 
@@ -235,13 +237,18 @@ export function linkedCopyBranches(
  * and string conversions through helpers left with no other answer return
  * to their plain form. Helpers this registers are completed too, and
  * method calls a link source shadows are refused. */
-export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): void {
+export function finalizeRecordLinks(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   // A finalizer may be the only work (a width copy that can read a target
   // field off its source's kept view, record-sources.ts).
   if (
     lowerer.linkedHelpers.length === 0 &&
     lowerer.recordLinks.size === 0 &&
-    lowerer.linkedHelperFinalizers.length === 0
+    lowerer.linkedHelperFinalizers.length === 0 &&
+    !functions.some((fn) => census.hasLibFn(fn, "json.stringifyReplacer"))
   )
     return;
   const lifted = lowerer.liftedFns.length;
@@ -276,6 +283,117 @@ export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): 
   // The module's functions already hold the helpers lifted before.
   functions.push(...lowerer.liftedFns.slice(lifted));
   restoreStringConversions(lowerer, functions, answering);
+  finalizeJsonStringify(lowerer, functions, census, sourced);
+}
+
+/** finalizeJsonStringify restores the static serializer after physical sources are
+ * known. The whole runtime producer is replaced, so a proven-static call
+ * creates no checked view. Its already-lowered optional result stays valid. */
+function finalizeJsonStringify(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+  sourced: ReadonlySet<string>,
+): void {
+  // Index the completed links once; each proof walks their reachable graph.
+  const sources = new Map<string, string[]>();
+  for (const link of lowerer.recordLinks.values()) {
+    const from = sources.get(link.to) ?? [];
+    from.push(link.from);
+    sources.set(link.to, from);
+  }
+
+  // A checked source can carry arbitrary hooks; declared fields alone cannot
+  // prove it static. Cache only completed root proofs across cyclic graphs.
+  const staticRoots = new Map<string, boolean>();
+  const safe = (type: IrType): boolean => {
+    const key = typeKey(type);
+    const cached = staticRoots.get(key);
+    if (cached !== undefined) return cached;
+    const seen = new Set<string>();
+    const visit = (t: IrType): boolean => {
+      const key = typeKey(t);
+      if (seen.has(key)) return true;
+      seen.add(key);
+      if (t.kind === "array") return visit(t.elem);
+      if (t.kind === "union") return (lowerer.unions.get(t.unionId)?.arms ?? []).every(visit);
+      if (t.kind !== "record") return true;
+      if (sourced.has(t.shapeId)) return false;
+      const shape = lowerer.shapes.get(t.shapeId);
+      if (!shape || shape.fields.some((field) => field.name === "toJSON")) return false;
+      for (const from of sources.get(t.shapeId) ?? []) {
+        const source: IrType = { kind: "record", shapeId: from };
+        if (
+          !isJsonStringifySafeType(
+            source,
+            (id) => lowerer.shapes.get(id),
+            (id) => lowerer.unions.get(id),
+          ) ||
+          !visit(source)
+        )
+          return false;
+      }
+      return (
+        shape.fields.every((field) => visit(field.type)) &&
+        (shape.indexValue === undefined || visit(shape.indexValue))
+      );
+    };
+    const result =
+      isJsonStringifySafeType(
+        type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      ) && visit(type);
+    staticRoots.set(key, result);
+    return result;
+  };
+
+  // Replace the whole producer, including its box and optional check. The
+  // expression's consumers already agree on its optional result ABI.
+  for (const fn of functions) {
+    if (!census.hasLibFn(fn, "json.stringifyReplacer")) continue;
+    fn.body = transformStmtList(fn.body, {
+      stmt: (stmt) => stmt,
+      expr: (expr) => {
+        if (expr.kind !== "dynCheck" && expr.kind !== "toString") return expr;
+        if (expr.kind === "dynCheck" && expr.type.kind !== "union") return expr;
+        const raw = expr.kind === "dynCheck" ? expr.value : expr.operand;
+        if (raw.kind !== "libCall" || raw.fn !== "json.stringifyReplacer") return expr;
+        const [boxed, replacer, gap] = raw.args;
+        if (
+          boxed?.kind !== "dynFrom" ||
+          replacer?.kind !== "dynFrom" ||
+          replacer.value.kind !== "unitLit" ||
+          replacer.value.unit !== "undefined" ||
+          gap?.kind !== "strLit"
+        )
+          return expr;
+        if (!safe(boxed.value.type)) return expr;
+        const serialized: IrExpr = {
+          kind: "jsonStringify",
+          value: boxed.value,
+          type: STRING,
+          loc: expr.loc,
+        };
+        if (gap.value !== "") serialized.indent = gap.value;
+        if (expr.kind === "toString") return serialized;
+        if (expr.type.kind !== "union") return expr;
+        const arms = lowerer.unions.get(expr.type.unionId)?.arms;
+        if (!arms || arms.length !== 2 || !arms.some((arm) => arm.kind === "undefinedT"))
+          return expr;
+        const tag = arms.findIndex((arm) => arm.kind === "string");
+        if (tag < 0) return expr;
+        return {
+          kind: "unionWrap",
+          unionId: expr.type.unionId,
+          tag,
+          value: serialized,
+          type: expr.type,
+          loc: expr.loc,
+        };
+      },
+    });
+  }
 }
 
 /** A call of an Object.prototype method by name on a record type runs

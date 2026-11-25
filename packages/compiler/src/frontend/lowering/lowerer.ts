@@ -12227,8 +12227,9 @@ export class Lowerer {
         this.isStdlibGlobal(e.expression.expression, "JSON")
       )
         return true;
-      // An untyped root can serialize to undefined; the result keeps it
-      // unless every use reads it as text (jsonResultTextOnly).
+      // A root can serialize to undefined, including through a retained
+      // toJSON hook not known until the physical graph is complete. Keep
+      // the optional result unless every use reads it as text.
       if (
         ts.isCallExpression(e) &&
         e.arguments.nodes.length > 0 &&
@@ -12245,6 +12246,9 @@ export class Lowerer {
         const mapped = this.mapTypeOf(root);
         if (
           mapped?.kind === "dyn" ||
+          mapped?.kind === "record" ||
+          mapped?.kind === "array" ||
+          mapped?.kind === "union" ||
           (mapped === null && (root.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) ||
           (mapped?.kind === "object" &&
             this.findMethodOn(this.classes.get(mapped.className) ?? null, "toJSON") !== null)
@@ -15510,7 +15514,7 @@ export class Lowerer {
     // another union's arm, where the program can tell the copy from the
     // object is refused while a module can still fail.
     this.timedPass("refuseObservedCopies", () => refuseObservedCopies(this, functions));
-    this.timedPass("finalizeRecordLinks", () => finalizeRecordLinks(this, functions));
+    this.timedPass("finalizeRecordLinks", () => finalizeRecordLinks(this, functions, census));
     this.timedPass("finalizeGeneratorArrays", () => finalizeGeneratorArrays(this, functions));
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
