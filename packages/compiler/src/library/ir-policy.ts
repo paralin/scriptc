@@ -11,7 +11,7 @@ import { moduleRuntimeFeatures } from "../ir/runtime-features.js";
  * WASI libraries already carry scr_async.c and use switched coroutine
  * frames, so synchronous generators can resume on their caller's stack
  * without an event loop. Native libraries still omit the generator unit.
- * Async functions, generators and scheduling surfaces remain refused. */
+ * Async functions, async generators and scheduling surfaces remain refused. */
 
 /** libCall families a v1 library artifact refuses, with the surface name the SC4005
  * teaching uses. Prefix match over IrLibFn spellings. */
