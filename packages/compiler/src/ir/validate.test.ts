@@ -2234,3 +2234,28 @@ test("a record arm without the literal key answers undefined in unionKeyGet", ()
     ),
   ).toBe(true);
 });
+
+test("unit-only discriminator fields need no widened scalar literal metadata", () => {
+  const mod = discriminatedModule();
+  mod.records!.push({
+    id: "absent",
+    fields: [{ name: "kind", type: { kind: "union", unionId: "units" } }],
+  });
+  mod.unions![0]!.arms.push({ kind: "record", shapeId: "absent" });
+  mod.unions!.push({ id: "units", arms: [NULL_T, UNDEFINED_T] });
+
+  expect(validateModule(mod)).toEqual([]);
+  expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+
+  const unitRecords = structuredClone(mod);
+  unitRecords.unions![0]!.arms = [NULL_T, { kind: "record", shapeId: "absent" }, UNDEFINED_T];
+  unitRecords.unions![0]!.discriminant!.cases = [];
+  expect(
+    validateModule(unitRecords).some((error) => error.message.includes("empty discriminant cases")),
+  ).toBe(true);
+
+  mod.unions![1]!.arms.push(STRING);
+  expect(validateModule(mod).some((error) => error.message.includes("missing discriminant"))).toBe(
+    true,
+  );
+});

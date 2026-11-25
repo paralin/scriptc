@@ -1,5 +1,7 @@
 import type { IrRecordShape, IrType, IrUnionDef, IrUnionDiscriminant } from "../ir/ir.js";
 
+import { hasUnitOnlyDiscriminant } from "../ir/ir.js";
+
 export type UnionLiteral = string | number | boolean;
 
 /** Only ordinary data slots have a safe literal-comparison ABI. */
@@ -27,9 +29,10 @@ export function matchesLiteral(type: IrType, value: UnionLiteral): boolean {
 export function discriminantOwners(
   union: IrUnionDef,
   shapeOf: (id: string) => IrRecordShape | undefined,
+  unionOf: (id: string) => IrUnionDef | undefined,
 ): Map<string, number> | null {
   const discriminant = union.discriminant;
-  if (!discriminant) return null;
+  if (!discriminant || discriminant.cases.length === 0) return null;
   const owners = new Map<string, number>();
   const tags = new Set<number>();
   for (const entry of discriminant.cases) {
@@ -48,7 +51,13 @@ export function discriminantOwners(
     }
   }
   for (let tag = 0; tag < union.arms.length; tag++) {
-    if (union.arms[tag]!.kind === "record" && !tags.has(tag)) return null;
+    const arm = union.arms[tag]!;
+    if (
+      arm.kind === "record" &&
+      !tags.has(tag) &&
+      !hasUnitOnlyDiscriminant(shapeOf(arm.shapeId), discriminant.field, unionOf)
+    )
+      return null;
   }
   return owners;
 }
@@ -59,11 +68,12 @@ export function literalUnionArm(
   union: IrUnionDef,
   values: readonly UnionLiteral[],
   shapeOf: (id: string) => IrRecordShape | undefined,
+  unionOf: (id: string) => IrUnionDef | undefined,
   validatedOwners?: ReadonlyMap<string, number> | null,
 ): (IrType & { kind: "record" }) | null {
   if (values.length === 0) return null;
   const owners =
-    validatedOwners === undefined ? discriminantOwners(union, shapeOf) : validatedOwners;
+    validatedOwners === undefined ? discriminantOwners(union, shapeOf, unionOf) : validatedOwners;
   if (owners === null) return null;
   let tag: number | undefined;
   for (const value of values) {
@@ -82,6 +92,8 @@ export function literalUnionArm(
 export function remapUnionDiscriminant(
   source: IrUnionDef,
   arms: readonly IrType[],
+  shapeOf: (id: string) => IrRecordShape | undefined,
+  unionOf: (id: string) => IrUnionDef | undefined,
 ): IrUnionDiscriminant | undefined {
   const original = source.discriminant;
   if (!original) return undefined;
@@ -115,10 +127,23 @@ export function remapUnionDiscriminant(
     }
   }
   for (let tag = 0; tag < source.arms.length; tag++) {
-    if (source.arms[tag]!.kind === "record" && !seen.has(tag)) return undefined;
+    const arm = source.arms[tag]!;
+    if (
+      arm.kind === "record" &&
+      !seen.has(tag) &&
+      !hasUnitOnlyDiscriminant(shapeOf(arm.shapeId), original.field, unionOf)
+    )
+      return undefined;
   }
   for (let tag = 0; tag < arms.length; tag++) {
-    if (arms[tag]!.kind === "record" && !covered.has(tag)) return undefined;
+    const arm = arms[tag]!;
+    if (
+      arm.kind === "record" &&
+      !covered.has(tag) &&
+      (!source.arms.some((entry) => entry.kind === "record" && entry.shapeId === arm.shapeId) ||
+        !hasUnitOnlyDiscriminant(shapeOf(arm.shapeId), original.field, unionOf))
+    )
+      return undefined;
   }
   if (cases.length === 0) return undefined;
   cases.sort((a, b) => a.tag - b.tag);

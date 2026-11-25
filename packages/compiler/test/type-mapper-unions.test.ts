@@ -60,10 +60,11 @@ afterAll(() => {
 });
 
 function context(): TypeMapperCtx {
+  const shapes = new ShapeRegistry();
   return {
     checker: load.program.getTypeChecker(),
-    shapes: new ShapeRegistry(),
-    unions: new UnionRegistry(),
+    shapes,
+    unions: new UnionRegistry(shapes),
     classNamer: (decl) => decl.name?.text ?? "anonymous",
     typeMemo: new Map(),
     isStdlibFile: (sf) => load.program.isSourceFileDefaultLibrary(sf),
@@ -110,7 +111,12 @@ describe("checker and synthesized optional union identity", () => {
         ),
       ).toBe(required.unionId);
       for (const variant of original.discriminant!.cases) {
-        const arm = literalUnionArm(definition, variant.values, (id) => ctx.shapes.get(id));
+        const arm = literalUnionArm(
+          definition,
+          variant.values,
+          (id) => ctx.shapes.get(id),
+          (id) => ctx.unions.get(id),
+        );
         expect(arm).toEqual(original.arms[variant.tag]);
       }
       const count = ctx.unions.unions.length;
@@ -157,8 +163,22 @@ describe("checker and synthesized optional union identity", () => {
     const optionalLeft = withUndefinedArm(first, ctx.unions),
       optionalRight = withUndefinedArm(second, ctx.unions);
     expect(optionalLeft).not.toEqual(optionalRight);
-    expect(literalUnionArm(left, ["x"], (id) => ctx.shapes.get(id))).toBeNull();
-    expect(literalUnionArm(right, ["a"], (id) => ctx.shapes.get(id))).toBeNull();
+    expect(
+      literalUnionArm(
+        left,
+        ["x"],
+        (id) => ctx.shapes.get(id),
+        (id) => ctx.unions.get(id),
+      ),
+    ).toBeNull();
+    expect(
+      literalUnionArm(
+        right,
+        ["a"],
+        (id) => ctx.shapes.get(id),
+        (id) => ctx.unions.get(id),
+      ),
+    ).toBeNull();
   });
 
   test("a union without a usable discriminator does not gain one from another mapping", () => {
@@ -175,7 +195,12 @@ describe("checker and synthesized optional union identity", () => {
     const ctx = context();
     const tree = mapped("Tree", ctx);
     const original = ctx.unions.get(tree.unionId)!;
-    const branch = literalUnionArm(original, ["branch"], (id) => ctx.shapes.get(id))!;
+    const branch = literalUnionArm(
+      original,
+      ["branch"],
+      (id) => ctx.shapes.get(id),
+      (id) => ctx.unions.get(id),
+    )!;
     const children = ctx.shapes
       .get(branch.shapeId)!
       .fields.find((field) => field.name === "children")!.type;

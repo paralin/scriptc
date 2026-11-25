@@ -39,6 +39,7 @@ import {
   isSupportedSetElem,
   iterableArmsElem,
   isUnitType,
+  hasUnitOnlyDiscriminant,
   mapOf,
   NULL_T,
   PROCSTREAM_T,
@@ -1159,6 +1160,8 @@ export function checkerTypeDescription(
  * discriminator contract. An arm's index in that list IS its runtime tag.
  * Owned by the Lowerer; threaded through mapType like ShapeRegistry. */
 export class UnionRegistry {
+  constructor(private readonly shapes: ShapeRegistry) {}
+
   /** Existing arm/discriminator contracts change when a placeholder closes. */
   revision = 0;
   /** Each union id with a second hash of its key (keyedHelperName). */
@@ -1387,7 +1390,15 @@ export class UnionRegistry {
 
   /** An exact arm transformation keeps the source's semantic variants. */
   transform(source: IrUnionDef, arms: IrType[]): string {
-    return this.intern(arms, remapUnionDiscriminant(source, arms));
+    return this.intern(
+      arms,
+      remapUnionDiscriminant(
+        source,
+        arms,
+        (id) => this.shapes.get(id),
+        (id) => this.get(id),
+      ),
+    );
   }
 
   get(unionId: string): IrUnionDef | undefined {
@@ -8236,7 +8247,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       const discriminant =
         unionDiscriminant(recordParts, mergedArms, ctx) ??
         (substitutedUnions.length === 1
-          ? remapUnionDiscriminant(substitutedUnions[0]!, mergedArms)
+          ? remapUnionDiscriminant(
+              substitutedUnions[0]!,
+              mergedArms,
+              (id) => ctx.shapes.get(id),
+              (id) => unions.get(id),
+            )
           : undefined);
       if (unions.recursivePending(widened)) {
         // The knot closed through this union. A frame that resolved
@@ -8812,7 +8828,8 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
  * makes a later switch on kind read fields outside the allocated object.
  *
  * Require one common, required data property with finite literal values.
- * Values may repeat within a single storage arm (several variants share a
+ * Unit-only fields retain their finite value set in their ABI. Scalar
+ * values may repeat within a single storage arm (several variants share a
  * shape), but never select different arms. Non-record arms keep their
  * ordinary kind checks. Types without an unambiguous discriminator retain
  * their structural boundary behavior. */
@@ -8841,6 +8858,14 @@ function unionDiscriminant(
         complete = false;
         break;
       }
+      if (
+        hasUnitOnlyDiscriminant(
+          ctx.shapes.get(part.mapped.shapeId),
+          ts.symbolName(candidate),
+          (id) => ctx.unions.get(id),
+        )
+      )
+        continue;
       const values = literalValues(checker.getTypeOfSymbol(prop));
       if (!values) {
         complete = false;
@@ -8861,7 +8886,7 @@ function unionDiscriminant(
       if (!complete) break;
       byTag.set(tag, grouped);
     }
-    if (complete) {
+    if (complete && byTag.size > 0) {
       return {
         field: ts.symbolName(candidate),
         cases: [...byTag]

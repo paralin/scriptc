@@ -2283,11 +2283,35 @@ export function shapeHasAccessorSlots(shape: IrRecordShape): boolean {
   return shape.fields.some((f) => accessorSlotProp(f.name) !== null);
 }
 
+/** hasUnitOnlyDiscriminant proves that a field retains its complete
+ * null/undefined value set in its ABI.
+ * Scalar fields instead need literal metadata after widening. */
+export function hasUnitOnlyDiscriminant(
+  shape: IrRecordShape | undefined,
+  field: string,
+  unionOf: (id: string) => IrUnionDef | undefined,
+): boolean {
+  if (!shape || shape.tuple || field.startsWith("%")) return false;
+  if (
+    shape.fields.some((entry) => entry.name === `%get:${field}` || entry.name === `%set:${field}`)
+  )
+    return false;
+
+  const type = shape.fields.find((entry) => entry.name === field)?.type;
+  if (!type) return false;
+  if (isUnitType(type)) return true;
+
+  const arms = type.kind === "union" ? unionOf(type.unionId)?.arms : undefined;
+  return arms !== undefined && arms.length > 0 && arms.every(isUnitType);
+}
+
 /** Literal fields that select a record layout at a checked-dynamic boundary.
  * These are part of union identity: equal storage arms can have different
  * discriminator contracts. Several source variants can share one layout. */
 export interface IrUnionDiscriminant {
   field: string;
+  /** Scalar record arms own literal cases; unit-only discriminator fields
+   * retain their values in the field ABI and need no scalar entry. */
   cases: { tag: number; values: (string | number | boolean)[] }[];
 }
 

@@ -4,6 +4,7 @@ import {
   F64,
   STRING,
   isUnitType,
+  hasUnitOnlyDiscriminant,
   shapeHasAccessorSlots,
   typeEquals,
   typeKey,
@@ -62,6 +63,7 @@ export function planRecordUnionWrap(
   source: IrRecordShape,
   to: IrUnionDef,
   shapeOf: (id: string) => IrRecordShape | undefined,
+  unionOf: (id: string) => IrUnionDef | undefined,
 ): RecordUnionWrapPlan | null {
   const discriminant = to.discriminant;
   if (!discriminant || source.tuple || source.indexValue || shapeHasAccessorSlots(source))
@@ -98,7 +100,7 @@ export function planRecordUnionWrap(
       values: entry.values,
     });
   }
-  if (routes.length < 2 || discriminantOwners(to, shapeOf) === null) return null;
+  if (routes.length < 2 || discriminantOwners(to, shapeOf, unionOf) === null) return null;
   return { field: discriminant.field, fieldType, routes };
 }
 
@@ -113,13 +115,14 @@ export function planRecordUnionLift(
   source: IrRecordShape,
   to: IrUnionDef,
   shapeOf: (id: string) => IrRecordShape | undefined,
+  unionOf: (id: string) => IrUnionDef | undefined,
   widthLift: (src: IrType, dst: IrType) => WidthLift | null,
 ): RecordUnionWrapPlan | null {
   const discriminant = to.discriminant;
   if (!discriminant || source.tuple || source.indexValue || shapeHasAccessorSlots(source))
     return null;
   const fieldType = discriminantField(source, discriminant.field);
-  if (!fieldType || discriminantOwners(to, shapeOf) === null) return null;
+  if (!fieldType || discriminantOwners(to, shapeOf, unionOf) === null) return null;
   const sourceType: IrType = { kind: "record", shapeId: source.id };
   const routes: UnionRetagRoute[] = [];
   for (const entry of discriminant.cases) {
@@ -145,6 +148,7 @@ export function planUnionRetag(
   from: IrUnionDef,
   to: IrUnionDef,
   shapeOf: (id: string) => IrRecordShape | undefined,
+  unionOf: (id: string) => IrUnionDef | undefined,
   widthLift: (src: IrType, dst: IrType) => WidthLift | null,
   trappable?: ReadonlySet<number>,
   classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
@@ -157,8 +161,8 @@ export function planUnionRetag(
   const discriminant = from.discriminant;
   const useDiscriminant =
     discriminant !== undefined && discriminant.field === to.discriminant?.field;
-  const owners = useDiscriminant ? discriminantOwners(to, shapeOf) : null;
-  if (useDiscriminant && (owners === null || discriminantOwners(from, shapeOf) === null))
+  const owners = useDiscriminant ? discriminantOwners(to, shapeOf, unionOf) : null;
+  if (useDiscriminant && (owners === null || discriminantOwners(from, shapeOf, unionOf) === null))
     return null;
   // The CHECKED conversion (strandUnrouted) strands an arm the destination
   // cannot hold, but only one it holds NO way: an arm several destination
@@ -228,7 +232,13 @@ export function planUnionRetag(
       );
       continue;
     }
-    if (useDiscriminant && discriminant && owners && source.kind === "record") {
+    if (
+      useDiscriminant &&
+      discriminant &&
+      owners &&
+      source.kind === "record" &&
+      !hasUnitOnlyDiscriminant(shapeOf(source.shapeId), discriminant.field, unionOf)
+    ) {
       const entry = discriminant.cases.find((candidate) => candidate.tag === tag);
       const fieldType = discriminantField(shapeOf(source.shapeId), discriminant.field);
       if (!entry || !fieldType) {

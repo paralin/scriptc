@@ -74,7 +74,7 @@ describe("literal destination selection", () => {
     "selects all of %j using semantic ownership",
     (values, expected) => {
       const { union, shapeOf } = fixture();
-      expect(literalUnionArm(union, values, shapeOf)).toEqual(record(expected));
+      expect(literalUnionArm(union, values, shapeOf, () => undefined)).toEqual(record(expected));
     },
   );
 
@@ -92,41 +92,43 @@ describe("literal destination selection", () => {
     "declines absent or ambiguous literal set %j",
     (...values) => {
       const { union, shapeOf } = fixture();
-      expect(literalUnionArm(union, values, shapeOf)).toBeNull();
+      expect(literalUnionArm(union, values, shapeOf, () => undefined)).toBeNull();
     },
   );
 
   test("accepts repeated literals owned by the same layout", () => {
     const { union, shapeOf } = fixture();
     union.discriminant!.cases[1]!.values.push("text");
-    expect(literalUnionArm(union, ["text", "text"], shapeOf)).toEqual(record("text"));
+    expect(literalUnionArm(union, ["text", "text"], shapeOf, () => undefined)).toEqual(
+      record("text"),
+    );
   });
 
   test("requires metadata even for a single record arm", () => {
     const { union, shapeOf } = fixture();
     delete union.discriminant;
     union.arms = [record("text"), UNDEFINED_T];
-    expect(literalUnionArm(union, ["text"], shapeOf)).toBeNull();
+    expect(literalUnionArm(union, ["text"], shapeOf, () => undefined)).toBeNull();
   });
 
   test("does not infer a variant from a field name or storage layout", () => {
     const { union, shapeOf } = fixture();
     union.discriminant!.cases[0]!.values = ["text"];
     union.discriminant!.cases[1]!.values = ["empty"];
-    expect(literalUnionArm(union, ["text"], shapeOf)).toEqual(record("empty"));
+    expect(literalUnionArm(union, ["text"], shapeOf, () => undefined)).toEqual(record("empty"));
   });
 
   test("checks all owners before selecting a valid-looking first literal", () => {
     const { union, shapeOf } = fixture();
     union.discriminant!.cases[1]!.values.push("empty");
-    expect(discriminantOwners(union, shapeOf)).toBeNull();
-    expect(literalUnionArm(union, ["empty"], shapeOf)).toBeNull();
+    expect(discriminantOwners(union, shapeOf, () => undefined)).toBeNull();
+    expect(literalUnionArm(union, ["empty"], shapeOf, () => undefined)).toBeNull();
   });
 
   test.each([-1, 1.5, 100, NaN, Infinity, 4])("rejects invalid or non-record tag %s", (tag) => {
     const { union, shapeOf } = fixture();
     union.discriminant!.cases[1]!.tag = tag;
-    expect(discriminantOwners(union, shapeOf)).toBeNull();
+    expect(discriminantOwners(union, shapeOf, () => undefined)).toBeNull();
   });
 
   test("rejects duplicate tags, missing record cases, and empty cases", () => {
@@ -135,7 +137,10 @@ describe("literal destination selection", () => {
       if (mode === "duplicate") union.discriminant!.cases.push({ tag: 0, values: ["extra"] });
       if (mode === "missing") union.discriminant!.cases.pop();
       if (mode === "empty") union.discriminant!.cases[0]!.values = [];
-      expect(discriminantOwners(union, shapeOf), mode).toBeNull();
+      expect(
+        discriminantOwners(union, shapeOf, () => undefined),
+        mode,
+      ).toBeNull();
     }
   });
 
@@ -144,14 +149,14 @@ describe("literal destination selection", () => {
     (value) => {
       const { union, shapeOf } = fixture();
       union.discriminant!.cases[0]!.values = [value];
-      expect(discriminantOwners(union, shapeOf)).toBeNull();
+      expect(discriminantOwners(union, shapeOf, () => undefined)).toBeNull();
     },
   );
 
   test("rejects nonfinite numeric metadata even if another record was requested", () => {
     const { union, shapeOf } = fixture();
     union.discriminant!.cases[2]!.values.push(Infinity);
-    expect(literalUnionArm(union, ["text"], shapeOf)).toBeNull();
+    expect(literalUnionArm(union, ["text"], shapeOf, () => undefined)).toBeNull();
   });
 
   test("does not evaluate accessors, tuple slots, or private fields", () => {
@@ -179,16 +184,16 @@ describe("literal destination selection", () => {
   test("validates the discriminator's storage in every record", () => {
     const { union, shapes, shapeOf } = fixture();
     shapes[0]!.fields[0]!.type = { kind: "union", unionId: "optional" };
-    expect(literalUnionArm(union, ["text"], shapeOf)).toBeNull();
+    expect(literalUnionArm(union, ["text"], shapeOf, () => undefined)).toBeNull();
     shapes[0]!.fields[0]!.type = STRING;
     shapes.splice(2, 1);
-    expect(literalUnionArm(union, ["text"], shapeOf)).toBeNull();
+    expect(literalUnionArm(union, ["text"], shapeOf, () => undefined)).toBeNull();
   });
 });
 
 describe("exact union transformations", () => {
   test("remaps by complete type identity after permutation and scalar insertion", () => {
-    const { union } = fixture();
+    const { union, shapeOf } = fixture();
     const arms = [
       UNDEFINED_T,
       STRING,
@@ -198,7 +203,7 @@ describe("exact union transformations", () => {
       record("empty"),
       record("number"),
     ];
-    expect(remapUnionDiscriminant(union, arms)).toEqual({
+    expect(remapUnionDiscriminant(union, arms, shapeOf, () => undefined)).toEqual({
       field: "kind",
       cases: [
         { tag: 2, values: [false, true] },
@@ -210,61 +215,80 @@ describe("exact union transformations", () => {
   });
 
   test("retains surviving records when removing records and nullish arms", () => {
-    const { union } = fixture();
-    expect(remapUnionDiscriminant(union, [record("number"), record("empty")])).toEqual({
+    const { union, shapeOf } = fixture();
+    expect(
+      remapUnionDiscriminant(union, [record("number"), record("empty")], shapeOf, () => undefined),
+    ).toEqual({
       field: "kind",
       cases: [
         { tag: 0, values: [0, 1, -2.5] },
         { tag: 1, values: ["empty", "none"] },
       ],
     });
-    expect(remapUnionDiscriminant(union, [record("empty"), UNDEFINED_T])).toEqual({
+    expect(
+      remapUnionDiscriminant(union, [record("empty"), UNDEFINED_T], shapeOf, () => undefined),
+    ).toEqual({
       field: "kind",
       cases: [{ tag: 0, values: ["empty", "none"] }],
     });
-    expect(remapUnionDiscriminant(union, [NULL_T, UNDEFINED_T])).toBeUndefined();
+    expect(
+      remapUnionDiscriminant(union, [NULL_T, UNDEFINED_T], shapeOf, () => undefined),
+    ).toBeUndefined();
   });
 
   test("does not give a new record another layout's semantic variants", () => {
-    const { union } = fixture();
-    expect(remapUnionDiscriminant(union, [...union.arms, record("lookalike")])).toBeUndefined();
-    expect(remapUnionDiscriminant(union, [record("lookalike"), record("text")])).toBeUndefined();
+    const { union, shapeOf } = fixture();
+    expect(
+      remapUnionDiscriminant(union, [...union.arms, record("lookalike")], shapeOf, () => undefined),
+    ).toBeUndefined();
+    expect(
+      remapUnionDiscriminant(
+        union,
+        [record("lookalike"), record("text")],
+        shapeOf,
+        () => undefined,
+      ),
+    ).toBeUndefined();
   });
 
   test("does not retain partial metadata from an invalid source", () => {
-    const { union } = fixture();
+    const { union, shapeOf } = fixture();
     union.discriminant!.cases.pop();
     // Even when the missing record is dropped, the source contract was not complete.
-    expect(remapUnionDiscriminant(union, [record("empty"), UNDEFINED_T])).toBeUndefined();
+    expect(
+      remapUnionDiscriminant(union, [record("empty"), UNDEFINED_T], shapeOf, () => undefined),
+    ).toBeUndefined();
   });
 
   test.each([-1, 1.1, Infinity, 100, 4])("declines source metadata with tag %s", (tag) => {
-    const { union } = fixture();
+    const { union, shapeOf } = fixture();
     union.discriminant!.cases[0]!.tag = tag;
-    expect(remapUnionDiscriminant(union, union.arms)).toBeUndefined();
+    expect(remapUnionDiscriminant(union, union.arms, shapeOf, () => undefined)).toBeUndefined();
   });
 
   test("declines duplicate source cases and duplicate destination layouts", () => {
-    const { union } = fixture();
-    expect(remapUnionDiscriminant(union, [record("empty"), record("empty")])).toBeUndefined();
+    const { union, shapeOf } = fixture();
+    expect(
+      remapUnionDiscriminant(union, [record("empty"), record("empty")], shapeOf, () => undefined),
+    ).toBeUndefined();
     union.discriminant!.cases.push({ tag: 0, values: ["extra"] });
-    expect(remapUnionDiscriminant(union, union.arms)).toBeUndefined();
+    expect(remapUnionDiscriminant(union, union.arms, shapeOf, () => undefined)).toBeUndefined();
   });
 
   test("declines absent and empty metadata", () => {
-    const { union } = fixture();
+    const { union, shapeOf } = fixture();
     union.discriminant!.cases[0]!.values = [];
-    expect(remapUnionDiscriminant(union, union.arms)).toBeUndefined();
+    expect(remapUnionDiscriminant(union, union.arms, shapeOf, () => undefined)).toBeUndefined();
     delete union.discriminant;
-    expect(remapUnionDiscriminant(union, union.arms)).toBeUndefined();
+    expect(remapUnionDiscriminant(union, union.arms, shapeOf, () => undefined)).toBeUndefined();
   });
 
   test("does not mutate input arrays or share mutable case storage", () => {
-    const { union } = fixture();
+    const { union, shapeOf } = fixture();
     const before = structuredClone(union);
     const arms = union.arms.slice().reverse();
     const armOrder = structuredClone(arms);
-    const result = remapUnionDiscriminant(union, arms)!;
+    const result = remapUnionDiscriminant(union, arms, shapeOf, () => undefined)!;
     expect(union).toEqual(before);
     expect(arms).toEqual(armOrder);
     result.cases[0]!.values.push("new");
@@ -273,13 +297,55 @@ describe("exact union transformations", () => {
   });
 
   test("round trips tags without changing aliases or literal types", () => {
-    const { union } = fixture();
+    const { union, shapeOf } = fixture();
     const reversed = union.arms.slice().reverse();
     const next: IrUnionDef = {
       id: "next",
       arms: reversed,
-      discriminant: remapUnionDiscriminant(union, reversed)!,
+      discriminant: remapUnionDiscriminant(union, reversed, shapeOf, () => undefined)!,
     };
-    expect(remapUnionDiscriminant(next, union.arms)).toEqual(union.discriminant);
+    expect(remapUnionDiscriminant(next, union.arms, shapeOf, () => undefined)).toEqual(
+      union.discriminant,
+    );
   });
+});
+
+test("unit-only discriminators retain their ABI through ownership and remapping", () => {
+  const { union, shapes, shapeOf } = fixture();
+  const units: IrUnionDef = { id: "units", arms: [NULL_T, UNDEFINED_T] };
+  shapes.push({
+    id: "absent",
+    fields: [{ name: "kind", type: { kind: "union", unionId: units.id } }],
+  });
+  union.arms.push(record("absent"));
+  const unionOf = (id: string) => (id === units.id ? units : undefined);
+
+  const owners = discriminantOwners(union, shapeOf, unionOf);
+  expect(owners?.get(JSON.stringify("text"))).toBe(1);
+  expect(owners?.has(JSON.stringify("unknown"))).toBe(false);
+  expect(literalUnionArm(union, ["text"], shapeOf, unionOf, owners)).toEqual(record("text"));
+  expect(literalUnionArm(union, ["unknown"], shapeOf, unionOf, owners)).toBeNull();
+
+  const arms = [record("absent"), record("text"), UNDEFINED_T];
+  expect(remapUnionDiscriminant(union, arms, shapeOf, unionOf)).toEqual({
+    field: "kind",
+    cases: [{ tag: 1, values: union.discriminant!.cases[1]!.values }],
+  });
+  expect(
+    discriminantOwners(
+      {
+        id: "unit-records",
+        arms: [record("absent"), NULL_T],
+        discriminant: { field: "kind", cases: [] },
+      },
+      shapeOf,
+      unionOf,
+    ),
+  ).toBeNull();
+
+  // A missing string owner is still invalid; only intrinsic unit values
+  // can dispense with scalar literal metadata.
+  units.arms.push(STRING);
+  expect(discriminantOwners(union, shapeOf, unionOf)).toBeNull();
+  expect(remapUnionDiscriminant(union, arms, shapeOf, unionOf)).toBeUndefined();
 });
