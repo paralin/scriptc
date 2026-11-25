@@ -237,6 +237,7 @@ import {
 import {
   unionRetagMappable,
   narrowedRetagHelper,
+  checkedClassRetagRoutes,
   uninhabitedArmRetagHelper,
   strandedUnitTrap,
   strandedCoercionTrap,
@@ -20715,7 +20716,7 @@ export class Lowerer {
         expected.unionId,
         e.loc,
         undefined,
-        undefined,
+        checkedClassRetagRoutes(this, e.type.unionId, expected.unionId),
         false,
         true,
       );
