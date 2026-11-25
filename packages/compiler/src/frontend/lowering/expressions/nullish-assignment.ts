@@ -398,7 +398,10 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
   const value = rhs ?? lowerer.lowerExprExpecting(expr.right, storage);
   const assigned = lowerer.declareHiddenLocal("%shortCircuitValue", value.type);
   const ref = varRef(assigned.id, value.type, loc);
-  const stored: IrStmt[] = [{ kind: "varDecl", localId: assigned.id, init: value, loc }, write(ref)];
+  const stored: IrStmt[] = [
+    { kind: "varDecl", localId: assigned.id, init: value, loc },
+    write(ref),
+  ];
   const result = lowerer.coerceInto(expr.right, ref, read.type);
   const right: IrExpr = { kind: "seqExpr", stmts: stored, result, type: result.type, loc };
   if (!nullish) {

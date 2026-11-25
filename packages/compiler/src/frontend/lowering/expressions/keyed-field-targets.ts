@@ -82,7 +82,10 @@ function tupleElementField(
 }
 
 /** isTupleElementAccess reports whether access names a tuple's element by a numeric literal. */
-export function isTupleElementAccess(lowerer: Lowerer, access: ts.ElementAccessExpression): boolean {
+export function isTupleElementAccess(
+  lowerer: Lowerer,
+  access: ts.ElementAccessExpression,
+): boolean {
   return tupleElementField(lowerer, access) !== null;
 }
 

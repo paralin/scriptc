@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/untyped-let-hole-read.ts"],
+  "diags": []
+}

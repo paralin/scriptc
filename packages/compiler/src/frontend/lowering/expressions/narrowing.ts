@@ -866,7 +866,8 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         if (bound && lowerer.mapTypeOf(bound)?.kind === "dyn") return expr;
       }
     }
-    if (ts.isIdentifier(node) && isUntypedBareBinding(lowerer.resolveValueSymbol(node))) return expr;
+    if (ts.isIdentifier(node) && isUntypedBareBinding(lowerer.resolveValueSymbol(node)))
+      return expr;
     if (isJsSourceFile(ts.getSourceFileOfNode(node)) && ts.isIdentifier(node)) {
       const symbol = lowerer.resolveValueSymbol(node);
       if (
