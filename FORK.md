@@ -32,8 +32,10 @@ fork's GitHub releases until upstream ships the fixes.
 | `discriminated-record-exact-arm`    | Empty oneof payloads retain their discriminator tags   | not sent |
 | `guarded-char-unit-locals`         | Guarded optional characters keep code-unit comparisons | not sent |
 | `native-frontend-build-receipt`    | Native frontend checks keep complete build receipts off stdout | not sent |
-| `linked-source-json`               | JSON preserves retained class fields and omitted roots | not sent |
+| `linked-source-json`               | JSON preserves retained fields and restores source-free static writers | not sent |
 | `library-checked-runtime`          | Library archives retain boxed codecs and declaration adoption | not sent |
+| `optional-network-writer-chunks`   | Network writers normalize optional string and byte chunks | not sent |
+| `checked-class-union-routes`       | JS union boundaries test subclasses stored through base arms | not sent |
 | `fix/owned-process-heap-20261125`   | Owned compiler builds collect under heap pressure and keep separate CLI budgets | fork only |
 
 The `library-checked-runtime` handoff includes the existing library adoption
