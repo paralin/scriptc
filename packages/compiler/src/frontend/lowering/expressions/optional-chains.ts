@@ -621,6 +621,21 @@ export function lowerOptionalChain(
   // Member forms: re-dispatch the normal lowering with the receiver node
   // bound to the chain (reads as chainRecv, types as non-nullish).
   const narrowedTs = lowerer.checker.getNonNullableType(chainReceiverType(lowerer, recvNode));
+  // Earlier guards can remove present arms from the storage union. The
+  // chain still tests its actual absent arms, then projects only inside
+  // the guarded body to the type the checker proved for that body.
+  const checkedPresent = lowerer.mapTypeOf(narrowedTs);
+  if (
+    recvRef.type.kind === "union" &&
+    checkedPresent &&
+    !typeEquals(recvRef.type, checkedPresent)
+  ) {
+    const helper =
+      checkedPresent.kind === "union"
+        ? lowerer.narrowedRetagHelper(recvNode, recvRef.type.unionId, checkedPresent.unionId, loc)
+        : lowerer.narrowedArmHelper(recvRef.type.unionId, checkedPresent, loc);
+    if (helper) recvRef = lowerer.checkedNarrowCall(helper, recvRef, checkedPresent, loc);
+  }
   lowerer.chainRecvByNode.set(recvNode, recvRef);
   lowerer.chainNarrowedType.set(recvNode, narrowedTs);
   lowerer.chainHandled.add(dotNode);
