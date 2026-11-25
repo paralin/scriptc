@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
-import { compile } from "../packages/compiler/src/index.js";
+import { collectGarbageUnderHeapPressure, compile } from "../packages/compiler/src/index.js";
 import { NATIVE_TARGETS, nativeCodegenTarget } from "../packages/compiler/src/backend/targets.js";
 import { tsgoExecutable } from "../packages/compiler/src/frontend/ts7/rpc-api.js";
 import { PACK_VERIFIED_FILE } from "../packages/compiler/src/backend/runtime-pack-native.js";
@@ -21,6 +21,9 @@ import { prebuiltLibDiagnosticsText } from "../packages/compiler/src/frontend/ts
 import { REFRESH_COMMAND, judgeProfileMatch } from "./build-native-cli-profile.mjs";
 import { stageNativeCliAssets } from "./native-cli-assets.mjs";
 import type { NativeToolchainManifest } from "../packages/compiler/src/native/toolchain.js";
+
+// This process owns the compiler heap, as the CLI and frontend process do.
+collectGarbageUnderHeapPressure();
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const output = resolve(process.argv[2] ?? join(root, ".scriptc/native-cli"));
