@@ -50,6 +50,7 @@ test("library pack modes preserve pure runtime features and exclude ambient even
         "scr_copying.c",
         "scr_js_buffers.c",
         "scr_decl_adopt.c",
+        "scr_text_codec_dyn.c",
       ])
         expect(sources).toContain(source);
       // A library whose program moves a buffer names scr_js_buffers_arm, so
@@ -99,6 +100,25 @@ test("library flavors keep the typed join of an array of strings", () => {
       );
       expect(unit?.predicate).toBe("arrJoinStr");
       expect(unit?.variants.map((variant) => variant.id)).toEqual(["default"]);
+    }
+  }
+});
+
+test("library flavors preserve the text codec handle unit", () => {
+  for (const object_format of ["elf", "macho", "coff", "wasm"]) {
+    const pack = createRuntimePackMatrix({
+      target: { object_format },
+      compileFlags: [],
+      systemLibraries: [],
+    });
+    for (const mode of object_format === "wasm" ? ["library"] : ["library", "library-thread"]) {
+      for (const optimization of ["release", "dev"]) {
+        const unit = pack.flavors[`${mode}-${optimization}`].runtime_units.find(
+          (entry) => entry.source === "scr_text_codec_dyn.c",
+        );
+        expect(unit?.predicate).toBe("textCodecDyn");
+        expect(unit?.variants.map((variant) => variant.id)).toEqual(["default"]);
+      }
     }
   }
 });

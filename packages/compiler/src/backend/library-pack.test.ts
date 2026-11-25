@@ -32,6 +32,8 @@ describe("library archive runtime gates", () => {
       "regex",
       "copying",
       "textDecoderLegacy",
+      "textCodecDyn",
+      "declAdopt",
       "bigintBytes",
       "zlib",
       "assert",

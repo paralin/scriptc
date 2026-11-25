@@ -592,6 +592,10 @@ export interface LibArchiveOptions {
   x509?: boolean;
   copying?: boolean;
   textDecoderLegacy?: boolean;
+  /** Typed text codecs crossing checked-dynamic storage: scr_text_codec_dyn.c. */
+  textCodecDyn?: boolean;
+  /** See CcOptions.declAdopt: checked values adopt their shared source. */
+  declAdopt?: boolean;
   /** See CcOptions.bigintBytes: the SameValueZero/element-value methods of a
    * BigInt typed array, in the archive's bytes and json units. */
   bigintBytes?: boolean;

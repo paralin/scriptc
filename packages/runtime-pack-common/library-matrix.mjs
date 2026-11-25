@@ -47,6 +47,8 @@ export function withLibraryRuntimeFlavors(matrix) {
     "scr_arr_join_str.c",
     // Checked casts of untyped values to classes adopt them (dyn.adoptShared).
     "scr_decl_adopt.c",
+    // Text codecs crossing untyped slots keep the same records and streaming state.
+    "scr_text_codec_dyn.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(
