@@ -33,6 +33,12 @@ fork's GitHub releases until upstream ships the fixes.
 | `guarded-char-unit-locals`         | Guarded optional characters keep code-unit comparisons | not sent |
 | `native-frontend-build-receipt`    | Native frontend checks keep complete build receipts off stdout | not sent |
 | `linked-source-json`               | JSON preserves retained class fields and omitted roots | not sent |
+| `library-checked-runtime`          | Library archives retain boxed codecs and declaration adoption | not sent |
+| `fix/owned-process-heap-20261125`   | Owned compiler builds collect under heap pressure and keep separate CLI budgets | fork only |
+
+The `library-checked-runtime` handoff includes the existing library adoption
+unit and WASI synchronous-generator patches as prerequisites for its shared
+library run-through. Its feature projection repair is commit `269375a073`.
 
 The fork now builds on upstream 0.4.16. That release also fixes union results
 whose payload is undefined and JSON.stringify of recursive UI element trees.
