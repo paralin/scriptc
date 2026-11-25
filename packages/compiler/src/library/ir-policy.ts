@@ -4,13 +4,14 @@ import { moduleRuntimeFeatures } from "../ir/runtime-features.js";
 
 /* ── library mode's async_free gate ──────────────────────────────────────
  * v1 library mode REQUIRES an async_free module graph (ratified): no async
- * functions, no generators, no timers, no event-loop or ambient-process
+ * functions, no native generators, no timers, no event-loop or ambient-process
  * surface anywhere the entry reaches — a static fact of the graph, never a
  * runtime observation. The detector below answers "what does this graph
  * reach that a library artifact cannot link?", first offender with its source anchor;
- * the structural consequence (scr_async.c / scr_child.c and every
- * loop-hooked unit never join a library link) is safe exactly because this
- * refusal ran first. */
+ * WASI libraries already carry scr_async.c and use switched coroutine
+ * frames, so synchronous generators can resume on their caller's stack
+ * without an event loop. Native libraries still omit the generator unit.
+ * Async functions, generators and scheduling surfaces remain refused. */
 
 /** libCall families a v1 library artifact refuses, with the surface name the SC4005
  * teaching uses. Prefix match over IrLibFn spellings. */
@@ -167,11 +168,14 @@ const LIB_MODE_REFUSED_KINDS: ReadonlyMap<string, string> = new Map([
  * coarse moduleUses* predicates are the safety net behind the fine-grained
  * table (a surface reached only through a spelling the table misses still
  * refuses, anchored at the entry). */
-export function moduleLibAsyncSurface(mod: IrModule): { surface: string; loc: SrcLoc } | null {
+export function moduleLibAsyncSurface(
+  mod: IrModule,
+  wasmSyncGenerators = false,
+): { surface: string; loc: SrcLoc } | null {
   for (const fn of mod.functions) {
     if (fn.async === true)
       return { surface: `an async function ('${fn.name.replace(/^%/, "")}')`, loc: fn.loc };
-    if (fn.generator !== undefined) {
+    if (fn.generator !== undefined && !wasmSyncGenerators) {
       return { surface: `a generator function ('${fn.name.replace(/^%/, "")}')`, loc: fn.loc };
     }
   }
@@ -179,12 +183,15 @@ export function moduleLibAsyncSurface(mod: IrModule): { surface: string; loc: Sr
   let found: { surface: string; loc: SrcLoc } | null = null;
   const checkKind = (kind: string, loc: SrcLoc): boolean => {
     const surface = LIB_MODE_REFUSED_KINDS.get(kind);
-    if (surface === undefined) return true;
+    if (surface === undefined || (wasmSyncGenerators && kind === "yieldExpr")) return true;
     found = { surface, loc };
     return false;
   };
   everyModuleNode(mod, {
-    type: (node, loc) => checkKind(node.kind, loc),
+    type: (node, loc) =>
+      wasmSyncGenerators && node.kind === "generator" && node.async !== true
+        ? true
+        : checkKind(node.kind, loc),
     stmt: () => true,
     expr: (node) => {
       if (!checkKind(node.kind, node.loc)) return false;
