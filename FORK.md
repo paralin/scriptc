@@ -42,8 +42,11 @@ The `library-checked-runtime` handoff includes the existing library adoption
 unit and WASI synchronous-generator patches as prerequisites for its shared
 library run-through. Its feature projection repair is commit `269375a073`.
 
-The fork now builds on upstream 0.4.16. That release also fixes union results
-whose payload is undefined and JSON.stringify of recursive UI element trees.
+The fork now builds on upstream `main` after 0.4.17. Each fix's corpus program
+still fails under upstream's 0.4.17 compiler, except two that guard the fork's
+own changes: `nullish-assignment-union-value` covers a case that the fork's
+`??=` call path broke, and `union-primitive-arm-members` was already in
+upstream's corpus before the fork extended it.
 
 Upstream fixed generic class methods (#1), union checks on optional class
 fields (#2) and references across dynamic calls (#8) on its own, so the fork no
