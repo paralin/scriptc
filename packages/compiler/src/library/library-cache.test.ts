@@ -733,6 +733,8 @@ test("a dev library reuses cached LLVM only when an edit keeps source positions"
       x509: false,
       copying: false,
       textDecoderLegacy: false,
+      textCodecDyn: false,
+      declAdopt: false,
       bigintBytes: false,
       mutableBuffers: false,
       dynInvoke: false,
